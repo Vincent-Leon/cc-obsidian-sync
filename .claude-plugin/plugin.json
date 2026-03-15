@@ -1,0 +1,11 @@
+{
+  "name": "cc-obsidian-sync",
+  "version": "0.1.0",
+  "description": "Auto-sync Claude Code conversations to Obsidian via Fast Note Sync. Every CC response is saved, tagged by project, and pushed to your vault with daily diary entries.",
+  "author": {
+    "name": "cc-obsidian-sync contributors"
+  },
+  "repository": "https://github.com/user/cc-obsidian-sync",
+  "license": "MIT",
+  "keywords": ["obsidian", "sync", "conversation", "knowledge-base", "fast-note-sync"]
+}
