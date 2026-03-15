@@ -1,7 +1,14 @@
-Test the connection to your Fast Note Sync server.
+---
+allowed-tools: Bash(python3:*)
+description: Test FNS API connectivity
+---
+
+## Your task
+
+Run the following command:
 
 ```bash
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/cc-sync.py test
 ```
 
-Present the results. If the test fails, help the user diagnose the issue based on the error message.
+Present the results to the user. You MUST execute this bash command immediately. Do not use any other tools or do anything else.

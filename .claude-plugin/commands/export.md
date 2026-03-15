@@ -1,9 +1,14 @@
-Export all unsynchronized conversations to FNS.
+---
+allowed-tools: Bash(python3:*)
+description: Export all unsynchronized conversations to FNS
+---
 
-Scans all conversation logs in `~/.claude/conversation-logs/`, skips already synced ones, and uploads the rest.
+## Your task
+
+Run the following command to export all conversations:
 
 ```bash
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/cc-sync.py export
 ```
 
-Show the user the export progress output. This is useful for initial setup to bulk-sync all existing conversations.
+Present the output to the user. You MUST execute this bash command immediately. Do not use any other tools or do anything else besides running this command and presenting the result.

@@ -12,21 +12,21 @@ Use this skill when the user asks about:
 
 ## Available commands
 
-- `/cc-sync:setup` — Interactive configuration wizard
+- `/cc-sync:setup` — Configure FNS connection (pass FNS JSON config as argument)
 - `/cc-sync:status` — Show current config and sync state
 - `/cc-sync:test` — Test FNS API connectivity
 - `/cc-sync:run` — Manually sync latest conversation
+- `/cc-sync:export` — Bulk export all unsynchronized conversations
 - `/cc-sync:log` — View recent sync log
 
 ## How it works
 
-A Stop hook fires after every Claude Code response, calling `scripts/cc-sync.py hook` which:
-1. Saves the conversation locally via conversation-logger
-2. Parses the conversation into an Obsidian note with YAML frontmatter
-3. Detects the project from the working directory
-4. Pushes to FNS (API mode or direct file write)
-5. Updates the daily note with a conversation entry
+A Stop hook fires after every Claude Code session ends, calling `scripts/cc-sync.py hook` which:
+1. Finds the latest conversation from `~/.claude/conversation-logs/`
+2. Parses the conversation into a markdown note
+3. Pushes to FNS via REST API (`POST /api/note`)
+4. Tracks sync state to avoid duplicates
 
 ## Configuration
 
-Config is stored at `~/.config/cc-sync/config.json`. Use `/cc-sync:setup` to configure interactively.
+Config is stored at `~/.config/cc-sync/config.json`. Use `/cc-sync:setup` to configure.

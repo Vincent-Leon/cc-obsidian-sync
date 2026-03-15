@@ -1,7 +1,14 @@
-Show recent sync activity log.
+---
+allowed-tools: Bash(python3:*)
+description: View recent sync activity log
+---
+
+## Your task
+
+Run the following command:
 
 ```bash
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/cc-sync.py log
 ```
 
-Present the log entries to the user. Highlight any errors (lines containing ❌).
+Present the log entries to the user. You MUST execute this bash command immediately. Do not use any other tools or do anything else.

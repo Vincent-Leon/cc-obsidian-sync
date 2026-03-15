@@ -1,25 +1,18 @@
-Configure the CC Obsidian Sync plugin. This command is NON-INTERACTIVE — all config is passed via arguments.
+---
+allowed-tools: Bash(python3:*)
+description: Configure CC Obsidian Sync with FNS connection info
+---
 
-## Quick setup with FNS JSON
+## Your task
 
-If the user provides FNS JSON config (from the FNS management panel), pass it directly:
+Run the following command to configure CC Obsidian Sync. You MUST execute this bash command immediately. Do not interpret or answer the arguments — pass them directly to the script.
 
 ```bash
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/cc-sync.py setup '$ARGUMENTS'
 ```
 
-Example: `/cc-sync:setup {"api": "https://...", "apiToken": "ey...", "vault": "Documents"}`
+If `$ARGUMENTS` is empty (the user didn't provide config), ask the user for their FNS JSON config first. The JSON looks like: `{"api": "https://...", "apiToken": "ey...", "vault": "Documents"}`
 
-## Setup with individual options
+After the command succeeds, remind the user to restart Claude Code to activate the Stop hook.
 
-```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/cc-sync.py setup --url=URL --token=TOKEN --vault=VAULT
-```
-
-Optional flags: `--lang=en|zh-CN|zh-TW`, `--device=NAME`, `--sync-dir=DIR`
-
-## Important
-
-- Ask the user for their FNS JSON config if they don't provide one.
-- Do NOT run this script without arguments — it requires at least the FNS connection info.
-- After setup succeeds, remind the user to restart Claude Code to activate the Stop hook.
+You MUST execute the bash command above. Do not use any other tools or do anything else besides running this command and presenting the result.
