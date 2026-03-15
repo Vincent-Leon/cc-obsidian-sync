@@ -3,6 +3,7 @@
 cc-sync.py — Claude Code → Obsidian sync engine (via Fast Note Sync)
 
 Part of the cc-obsidian-sync plugin. Zero external dependencies.
+Only syncs conversation files — no Obsidian-specific processing.
 
 Subcommands:
   setup   Interactive FNS configuration wizard
@@ -13,7 +14,7 @@ Subcommands:
   log     Show recent sync log entries
 """
 
-import base64, hashlib, json, os, re, subprocess, sys, time
+import base64, hashlib, json, os, re, sys
 import urllib.request, urllib.error
 from datetime import datetime
 from pathlib import Path
@@ -25,7 +26,6 @@ CONFIG_FILE  = CONFIG_DIR / "config.json"
 STATE_FILE   = CONFIG_DIR / "state.json"
 LOG_FILE     = CONFIG_DIR / "sync.log"
 CC_LOGS      = HOME / ".claude" / "conversation-logs"
-SKILL_DIR    = HOME / ".claude" / "skills" / "conversation-logger"
 
 # ── Logging ──────────────────────────────────────────────────
 def log(msg, echo=False):
@@ -82,11 +82,7 @@ def fns_call(cfg, endpoint, data):
         return False, str(e)
 
 def fns_upload(cfg, path, content):
-    """Upload or update a note via FNS REST API.
-
-    Tries the configured endpoint first, falls back to common alternatives.
-    The content is base64-encoded per the FNS REST API spec.
-    """
+    """Upload or update a note via FNS REST API."""
     api = cfg["fns_api"]
     ep = api.get("upload_endpoint", "/api/note/upload")
     content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
@@ -113,45 +109,12 @@ def fns_upload(cfg, path, content):
             continue
         ok2, resp2 = fns_call(cfg, alt, payload_plain)
         if ok2:
-            # Remember working endpoint
             cfg["fns_api"]["upload_endpoint"] = alt
             cfg_save(cfg)
             log(f"Auto-detected working endpoint: {alt}")
             return True, resp2
 
-    return False, resp  # return original error
-
-def fns_get(cfg, path):
-    """Get note content from FNS."""
-    api = cfg["fns_api"]
-    ep = api.get("get_endpoint", "/api/note/get")
-    return fns_call(cfg, ep, {"repo_id": int(api.get("repo_id", 0)), "path": path})
-
-# ── Direct file sync ────────────────────────────────────────
-def direct_write(cfg, path, content):
-    vault = Path(cfg["fns_direct"]["vault_path"])
-    target = vault / path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
-    return True, "written"
-
-def direct_read(cfg, path):
-    vault = Path(cfg["fns_direct"]["vault_path"])
-    f = vault / path
-    if f.exists():
-        return True, {"content": f.read_text(encoding="utf-8")}
-    return False, "not found"
-
-# ── Unified sync interface ───────────────────────────────────
-def push_note(cfg, path, content):
-    if cfg.get("sync_method") == "direct":
-        return direct_write(cfg, path, content)
-    return fns_upload(cfg, path, content)
-
-def get_note(cfg, path):
-    if cfg.get("sync_method") == "direct":
-        return direct_read(cfg, path)
-    return fns_get(cfg, path)
+    return False, resp
 
 # ── Conversation parsing ────────────────────────────────────
 def find_latest():
@@ -159,79 +122,21 @@ def find_latest():
     mds = [f for f in CC_LOGS.glob("conversation_*.md") if not f.is_symlink()]
     return max(mds, key=lambda f: f.stat().st_mtime) if mds else None
 
-def parse_convo(md):
+def make_title(md):
+    """Extract a short title from conversation file."""
     content = md.read_text(encoding="utf-8", errors="replace")
     lines = content.strip().split("\n")
-    title = first_msg = None
+    for ln in lines:
+        if ln.startswith("# ") and "Conversation" not in ln:
+            return san(ln[2:].strip())
+    # Fallback: use first user message
     for i, ln in enumerate(lines):
-        if ln.startswith("# ") and not title: title = ln[2:].strip()
-        if ("**User:**" in ln or "👤" in ln) and not first_msg:
+        if "**User:**" in ln or "\u{1f464}" in ln:
             for s in lines[i+1:]:
                 s = s.strip()
-                if s and not s.startswith(("---", "🤖", "**")): first_msg = s[:120]; break
-    ts = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})", md.stem)
-    return dict(
-        title=title, first_msg=first_msg,
-        date=ts.group(1) if ts else datetime.now().strftime("%Y-%m-%d"),
-        time=(ts.group(2) if ts else datetime.now().strftime("%H-%M-%S")).replace("-", ":"),
-        content=content, nlines=len(lines),
-    )
-
-def parse_session(md):
-    sf = str(md).replace(".md", ".json").replace("conversation_", "session_")
-    try:
-        with open(sf) as f: return json.load(f)
-    except Exception: return {}
-
-def detect_project(meta):
-    cwd = meta.get("cwd", "") or meta.get("project_path", "")
-    if cwd:
-        p = Path(cwd).name
-        if p and p not in ("~", ".", ""): return san(p), cwd
-    return "_uncategorized", ""
-
-def make_title(info):
-    if info.get("title") and "Conversation" not in (info.get("title") or ""):
-        return san(info["title"])
-    if info.get("first_msg"):
-        return san(" ".join(re.sub(r'[#*`\[\]]', '', info["first_msg"]).split()[:8]))
+                if s and not s.startswith(("---", "\u{1f916}", "**")):
+                    return san(" ".join(re.sub(r'[#*`\[\]]', '', s).split()[:8]))
     return "untitled"
-
-# ── Note builders ────────────────────────────────────────────
-def build_note(info, proj, proj_path, device, ai):
-    t = make_title(info)
-    body = re.sub(r'^# Conversation.*?\n+', '', info["content"], count=1)
-    body = re.sub(r'^\*\*Session ID:\*\*.*?\n+', '', body, count=1)
-    return f"""---
-source: claude-code
-device: "{device}"
-project: "[[{proj}]]"
-date: {info['date']}
-time: "{info['time']}"
-type: ai-conversation
-tags: [ai-conversation, claude-code, "{proj}", "device/{device}"]
----
-
-# {t}
-
-> Project: `{proj_path or proj}` | Device: `{device}` | {info['date']} {info['time']}
-
-{body}"""
-
-def build_stub(proj, date, title, ai):
-    return f"---\nsource: claude-code\nproject: \"[[{proj}]]\"\ndate: {date}\ntype: ai-conversation-ref\n---\n\n![[{ai}/conversations/{date}_{title}]]\n"
-
-def build_entry(time_, title, proj, device, ai, date):
-    return f"- {time_} **{title}** · `{proj}` · `{device}` · [[{ai}/conversations/{date}_{title}|full conversation]]"
-
-def update_daily(existing, heading, entry):
-    if entry.strip() in existing: return existing
-    if heading in existing:
-        pos = existing.index(heading) + len(heading)
-        nxt = re.search(r'\n## ', existing[pos+1:])
-        ins = pos + 1 + nxt.start() if nxt else len(existing)
-        return existing[:ins].rstrip('\n') + "\n" + entry + "\n\n" + existing[ins:].lstrip('\n')
-    return existing.rstrip('\n') + f"\n\n{heading}\n\n{entry}\n"
 
 # ── Pipeline ─────────────────────────────────────────────────
 def process(cfg, state, echo=False):
@@ -240,62 +145,25 @@ def process(cfg, state, echo=False):
     h = md5(str(md))
     if state.get(str(md)) == h: return 0
 
-    info = parse_convo(md)
-    if info["nlines"] < 5: return 0
+    content = md.read_text(encoding="utf-8", errors="replace")
+    if len(content.strip().split("\n")) < 5: return 0
 
-    meta = parse_session(md)
-    proj, pp = detect_project(meta)
-    title = make_title(info)
-    d, t = info["date"], info["time"]
-    dev = cfg.get("device_name", "unknown")
-    obs = cfg.get("obsidian", {})
-    ai = obs.get("ai_dir", "AI-Knowledge")
-    heading = obs.get("daily_heading", "## AI conversations")
-    daily_dir = obs.get("daily_dir", "Daily")
-    daily_fmt = obs.get("daily_format", "%Y-%m-%d")
+    # Build filename: {date}_{title}.md
+    ts = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})", md.stem)
+    date = ts.group(1) if ts else datetime.now().strftime("%Y-%m-%d")
+    title = make_title(md)
+    sync_dir = cfg.get("sync_dir", "cc-sync")
+    rel_path = f"{sync_dir}/{date}_{title}.md"
 
-    # Build files
-    note = build_note(info, proj, pp, dev, ai)
-    stub = build_stub(proj, d, title, ai)
-    entry = build_entry(t, title, proj, dev, ai, d)
+    ok, msg = fns_upload(cfg, rel_path, content)
+    status = "\u2705" if ok else "\u274c"
+    log(f"{status} {rel_path}", echo=echo)
 
-    # Daily note: read → modify → write
-    try:
-        dt = datetime.strptime(d, "%Y-%m-%d")
-        dfname = dt.strftime(daily_fmt) + ".md"
-    except ValueError:
-        dfname = d + ".md"
-    dpath = f"{daily_dir}/{dfname}"
-
-    ok_d, resp_d = get_note(cfg, dpath)
-    if ok_d and isinstance(resp_d, dict):
-        daily_content = resp_d.get("content", "") or resp_d.get("data", {}).get("content", "") or f"# {d}\n\n"
-        # Handle base64 response
-        if resp_d.get("is_base64"):
-            try: daily_content = base64.b64decode(daily_content).decode("utf-8")
-            except Exception: pass
-    else:
-        daily_content = f"# {d}\n\n"
-    daily_updated = update_daily(daily_content, heading, entry)
-
-    # Push
-    files = [
-        (f"{ai}/conversations/{d}_{title}.md", note),
-        (f"{ai}/projects/{proj}/{d}_{title}.md", stub),
-    ]
-    if daily_updated != daily_content:
-        files.append((dpath, daily_updated))
-
-    synced = 0
-    for rel, content in files:
-        ok, msg = push_note(cfg, rel, content)
-        status = "✅" if ok else "❌"
-        log(f"{status} {rel}", echo=echo)
-        if ok: synced += 1
-
-    state[str(md)] = h
-    state_save(state)
-    return synced
+    if ok:
+        state[str(md)] = h
+        state_save(state)
+        return 1
+    return 0
 
 # ── Subcommands ──────────────────────────────────────────────
 
@@ -312,16 +180,14 @@ def parse_fns_json(text):
 
 def cmd_setup():
     """Interactive configuration wizard with FNS JSON quick-config support."""
-    print("\n  ╔══════════════════════════════════════╗")
-    print("  ║   CC Obsidian Sync — Setup Wizard    ║")
-    print("  ╚══════════════════════════════════════╝\n")
+    print("\n  \u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557")
+    print("  \u2551   CC Obsidian Sync \u2014 Setup Wizard    \u2551")
+    print("  \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d\n")
 
     cfg = cfg_load() or {
         "device_name": os.uname().nodename.split(".")[0],
-        "sync_method": "api",
-        "fns_api": {"url": "", "token": "", "repo_id": "", "upload_endpoint": "/api/note/upload", "get_endpoint": "/api/note/get"},
-        "fns_direct": {"vault_path": ""},
-        "obsidian": {"ai_dir": "AI-Knowledge", "daily_dir": "Daily", "daily_format": "%Y-%m-%d", "daily_heading": "## AI conversations"},
+        "sync_dir": "cc-sync",
+        "fns_api": {"url": "", "token": "", "repo_id": "", "upload_endpoint": "/api/note/upload"},
     }
 
     # Check for FNS JSON in command-line arguments
@@ -331,58 +197,30 @@ def cmd_setup():
         fns_json = parse_fns_json(args_text)
 
     if fns_json:
-        # Quick config from FNS JSON
-        print("  ✅ Detected FNS configuration JSON\n")
-        cfg["sync_method"] = "api"
+        print("  \u2705 Detected FNS configuration JSON\n")
         cfg["fns_api"]["url"] = fns_json["api"].rstrip("/")
         cfg["fns_api"]["token"] = fns_json["apiToken"]
-        if "vault" in fns_json:
-            cfg["fns_api"]["vault"] = fns_json["vault"]
         print(f"     API:   {cfg['fns_api']['url']}")
         print(f"     Token: {cfg['fns_api']['token'][:12]}...")
         if fns_json.get("vault"):
             print(f"     Vault: {fns_json['vault']}")
     else:
-        # Interactive: offer paste-JSON shortcut first
-        print("  💡 Tip: paste FNS JSON config for quick setup, or press Enter for manual config")
-        print('     (from FNS management panel → repo → copy config)\n')
+        print("  \U0001f4a1 Tip: paste FNS JSON config for quick setup, or press Enter for manual config")
+        print('     (from FNS management panel \u2192 repo \u2192 copy config)\n')
         paste = input("  Paste FNS JSON (or Enter to skip): ").strip()
         fns_json = parse_fns_json(paste) if paste else None
 
         if fns_json:
-            cfg["sync_method"] = "api"
             cfg["fns_api"]["url"] = fns_json["api"].rstrip("/")
             cfg["fns_api"]["token"] = fns_json["apiToken"]
-            if "vault" in fns_json:
-                cfg["fns_api"]["vault"] = fns_json["vault"]
-            print(f"\n  ✅ FNS config loaded")
+            print(f"\n  \u2705 FNS config loaded")
             print(f"     API:   {cfg['fns_api']['url']}")
             print(f"     Token: {cfg['fns_api']['token'][:12]}...")
             if fns_json.get("vault"):
                 print(f"     Vault: {fns_json['vault']}")
         else:
-            # Fall back to manual field-by-field input
-            # Sync method — auto-detect FNS local storage
-            fns_local = ""
-            for d in ["/data/fast-note-sync/storage", "/opt/fast-note/storage", str(HOME / "fast-note-sync" / "storage")]:
-                for vd in Path(d).glob("repos/*/vault") if Path(d).exists() else []:
-                    fns_local = str(vd); break
-                if fns_local: break
-
-            if fns_local:
-                print(f"\n  🔍 Detected FNS storage at: {fns_local}")
-                m = input("  Use direct file write? (faster, recommended) [Y/n]: ").strip().lower()
-                if m != "n":
-                    cfg["sync_method"] = "direct"
-                    cfg["fns_direct"]["vault_path"] = fns_local
-                else:
-                    cfg["sync_method"] = "api"
-            else:
-                cfg["sync_method"] = "api"
-
-            # FNS API config
-            print("\n  — FNS API Configuration —")
-            print("  (Get these from your FNS management panel → repository → viewConfig)\n")
+            print("\n  \u2014 FNS API Configuration \u2014")
+            print("  (Get these from your FNS management panel \u2192 repository \u2192 viewConfig)\n")
 
             u = input(f"  FNS server URL [{cfg['fns_api'].get('url', '')}]: ").strip()
             if u: cfg["fns_api"]["url"] = u
@@ -397,94 +235,54 @@ def cmd_setup():
     dn = input(f"\n  Device name [{cfg['device_name']}]: ").strip()
     if dn: cfg["device_name"] = dn
 
-    # Obsidian settings
-    print("\n  — Obsidian Settings —\n")
-    dd = input(f"  Daily notes folder name [{cfg['obsidian']['daily_dir']}]: ").strip()
-    if dd: cfg["obsidian"]["daily_dir"] = dd
-
-    df = input(f"  Daily note filename format [{cfg['obsidian']['daily_format']}]: ").strip()
-    if df: cfg["obsidian"]["daily_format"] = df
-
-    ad = input(f"  AI knowledge folder [{cfg['obsidian']['ai_dir']}]: ").strip()
-    if ad: cfg["obsidian"]["ai_dir"] = ad
-
-    # Install conversation-logger skill
-    print("\n  📦 Installing conversation-logger skill...")
-    if SKILL_DIR.exists():
-        subprocess.run(["git", "pull"], cwd=SKILL_DIR, capture_output=True)
-        print("     ✅ Updated")
-    else:
-        SKILL_DIR.parent.mkdir(parents=True, exist_ok=True)
-        r = subprocess.run(["git", "clone", "https://github.com/sirkitree/conversation-logger.git", str(SKILL_DIR)], capture_output=True)
-        print("     ✅ Installed" if r.returncode == 0 else f"     ❌ Failed: {r.stderr.decode()[:100]}")
-    for f in SKILL_DIR.glob("scripts/*"): f.chmod(0o755)
+    # Sync directory
+    sd = input(f"  Sync directory in vault [{cfg.get('sync_dir', 'cc-sync')}]: ").strip()
+    if sd: cfg["sync_dir"] = sd
 
     CC_LOGS.mkdir(parents=True, exist_ok=True)
     cfg_save(cfg)
 
-    print(f"\n  ✅ Config saved to {CONFIG_FILE}")
-    print(f"  ✅ Sync method: {cfg['sync_method']}")
+    print(f"\n  \u2705 Config saved to {CONFIG_FILE}")
     print(f"\n  Next: restart Claude Code to activate the Stop hook,")
     print(f"  then run /cc-sync:test to verify the FNS connection.\n")
 
 
 def cmd_hook():
-    """Stop hook entry point. Saves locally + pushes to FNS."""
-    try: stdin = sys.stdin.read()
-    except: stdin = ""
-
-    # Local save
-    try: hook = json.loads(stdin) if stdin.strip() else {}
-    except: hook = {}
-    tp, sid = hook.get("transcript_path", ""), hook.get("session_id", "unknown")
-    ss = SKILL_DIR / "scripts" / "save-conversation.sh"
-    if ss.exists() and tp:
-        subprocess.Popen(["bash", str(ss), tp, sid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(1)
-
-    # FNS push
+    """Stop hook entry point. Pushes latest conversation to FNS."""
     cfg = cfg_load()
     if not cfg or not cfg.get("fns_api", {}).get("token"):
-        log("Not configured — run /cc-sync:setup"); return 0
+        log("Not configured \u2014 run /cc-sync:setup"); return 0
     state = state_load()
     n = process(cfg, state)
-    if n: log(f"Synced {n} file(s) → {cfg.get('sync_method')} (device={cfg.get('device_name')})")
+    if n: log(f"Synced {n} file(s) (device={cfg.get('device_name')})")
 
 
 def cmd_run():
     cfg = cfg_load()
     if not cfg: print("  Not configured. Run /cc-sync:setup"); return 1
-    print(f"  Device: {cfg['device_name']} | Method: {cfg['sync_method']}\n")
+    print(f"  Device: {cfg['device_name']}\n")
     state = state_load()
     n = process(cfg, state, echo=True)
-    print(f"\n  {'✅ Synced ' + str(n) + ' file(s)' if n else '📭 Nothing new'}")
+    print(f"\n  {'\u2705 Synced ' + str(n) + ' file(s)' if n else '\U0001f4ed Nothing new'}")
 
 
 def cmd_test():
     cfg = cfg_load()
     if not cfg: print("  Not configured. Run /cc-sync:setup"); return 1
-    m = cfg.get("sync_method", "api")
-    print(f"  Method: {m}\n")
 
-    if m == "direct":
-        vp = cfg.get("fns_direct", {}).get("vault_path", "")
-        e = Path(vp).exists() if vp else False
-        print(f"  Vault: {vp}")
-        print(f"  Status: {'✅ OK' if e else '❌ Path not found'}")
-    else:
-        api = cfg.get("fns_api", {})
-        print(f"  URL:     {api.get('url')}")
-        print(f"  Repo ID: {api.get('repo_id')}")
-        print(f"  Token:   {api.get('token', '')[:12]}...\n")
+    api = cfg.get("fns_api", {})
+    print(f"  URL:     {api.get('url')}")
+    print(f"  Repo ID: {api.get('repo_id')}")
+    print(f"  Token:   {api.get('token', '')[:12]}...\n")
 
-        # Upload test note
-        test = f"---\ntest: true\ndate: {datetime.now().isoformat()}\n---\n\nCC-Sync connectivity test. Safe to delete.\n"
-        ok, msg = push_note(cfg, f"{cfg.get('obsidian',{}).get('ai_dir','AI-Knowledge')}/.cc-sync-test.md", test)
-        print(f"  Upload: {'✅ OK' if ok else '❌ Failed'}")
-        if not ok:
-            print(f"  Error: {msg}")
-            print(f"\n  💡 Check config: {CONFIG_FILE}")
-            print(f"     Or try /cc-sync:setup to reconfigure")
+    sync_dir = cfg.get("sync_dir", "cc-sync")
+    test = f"CC-Sync connectivity test.\nDate: {datetime.now().isoformat()}\nSafe to delete.\n"
+    ok, msg = fns_upload(cfg, f"{sync_dir}/.cc-sync-test.md", test)
+    print(f"  Upload: {'\u2705 OK' if ok else '\u274c Failed'}")
+    if not ok:
+        print(f"  Error: {msg}")
+        print(f"\n  \U0001f4a1 Check config: {CONFIG_FILE}")
+        print(f"     Or try /cc-sync:setup to reconfigure")
 
 
 def cmd_status():
@@ -493,19 +291,13 @@ def cmd_status():
         print("  Not configured. Run /cc-sync:setup"); return 1
 
     state = state_load()
-    print(f"  Device:      {cfg.get('device_name')}")
-    print(f"  Method:      {cfg.get('sync_method')}")
-    if cfg.get("sync_method") == "direct":
-        print(f"  Vault path:  {cfg.get('fns_direct', {}).get('vault_path')}")
-    else:
-        print(f"  FNS URL:     {cfg.get('fns_api', {}).get('url')}")
-    print(f"  AI dir:      {cfg.get('obsidian', {}).get('ai_dir')}")
-    print(f"  Daily dir:   {cfg.get('obsidian', {}).get('daily_dir')}")
-    print(f"  Processed:   {len(state)} conversation(s)")
-    print(f"  Config:      {CONFIG_FILE}")
-    print(f"  Log:         {LOG_FILE}")
+    print(f"  Device:    {cfg.get('device_name')}")
+    print(f"  FNS URL:   {cfg.get('fns_api', {}).get('url')}")
+    print(f"  Sync dir:  {cfg.get('sync_dir', 'cc-sync')}")
+    print(f"  Processed: {len(state)} conversation(s)")
+    print(f"  Config:    {CONFIG_FILE}")
+    print(f"  Log:       {LOG_FILE}")
 
-    # Show last 3 log entries
     if LOG_FILE.exists():
         lines = LOG_FILE.read_text().strip().split("\n")
         print(f"\n  Recent activity:")
@@ -529,7 +321,7 @@ def main():
     elif cmd == "status": cmd_status()
     elif cmd == "log":    cmd_log()
     else:
-        print("  cc-sync.py — CC → Obsidian via FNS")
+        print("  cc-sync.py \u2014 CC \u2192 Obsidian via FNS")
         print("  Commands: setup, hook, run, test, status, log")
 
 if __name__ == "__main__":
