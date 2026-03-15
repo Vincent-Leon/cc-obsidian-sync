@@ -8,11 +8,14 @@ Raw conversation files are pushed to your Obsidian vault as-is — no extra proc
 
 ## Install
 
+Add the plugin marketplace and install:
+
 ```
-/install github:Vincent-Leon/cc-obsidian-sync
+/plugin marketplace add https://github.com/Vincent-Leon/cc-obsidian-sync.git
+/plugin install cc-obsidian-sync@Vincent-Leon/cc-obsidian-sync
 ```
 
-Or local install:
+Or for local development:
 
 ```
 claude --plugin-dir /path/to/cc-obsidian-sync

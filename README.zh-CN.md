@@ -8,11 +8,14 @@
 
 ## 安装
 
+添加插件市场并安装：
+
 ```
-/install github:Vincent-Leon/cc-obsidian-sync
+/plugin marketplace add https://github.com/Vincent-Leon/cc-obsidian-sync.git
+/plugin install cc-obsidian-sync@Vincent-Leon/cc-obsidian-sync
 ```
 
-或本地安装：
+或本地开发模式：
 
 ```
 claude --plugin-dir /path/to/cc-obsidian-sync

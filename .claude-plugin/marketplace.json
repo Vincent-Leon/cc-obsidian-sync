@@ -1,0 +1,15 @@
+{
+  "name": "cc-obsidian-sync",
+  "owner": {
+    "name": "Vincent Leon"
+  },
+  "metadata": {
+    "description": "Auto-sync Claude Code conversations to Obsidian via Fast Note Sync."
+  },
+  "plugins": [
+    {
+      "name": "cc-obsidian-sync",
+      "source": "./.claude-plugin"
+    }
+  ]
+}
