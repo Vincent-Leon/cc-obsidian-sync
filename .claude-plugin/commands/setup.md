@@ -1,15 +1,25 @@
-Configure the CC Obsidian Sync plugin.
+Configure the CC Obsidian Sync plugin. This command is NON-INTERACTIVE — all config is passed via arguments.
 
-The user can provide an FNS JSON config block for quick setup, e.g.:
+## Quick setup with FNS JSON
 
-```json
-{"api": "https://...", "apiToken": "ey...", "vault": "Documents"}
-```
-
-Run the setup script. If the user provided a JSON config, pass it as an argument:
+If the user provides FNS JSON config (from the FNS management panel), pass it directly:
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/cc-sync.py setup $ARGUMENTS
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/cc-sync.py setup '$ARGUMENTS'
 ```
 
-Guide the user through the output. If setup succeeds, remind them to restart Claude Code to activate the Stop hook.
+Example: `/cc-sync:setup {"api": "https://...", "apiToken": "ey...", "vault": "Documents"}`
+
+## Setup with individual options
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/cc-sync.py setup --url=URL --token=TOKEN --vault=VAULT
+```
+
+Optional flags: `--lang=en|zh-CN|zh-TW`, `--device=NAME`, `--sync-dir=DIR`
+
+## Important
+
+- Ask the user for their FNS JSON config if they don't provide one.
+- Do NOT run this script without arguments — it requires at least the FNS connection info.
+- After setup succeeds, remind the user to restart Claude Code to activate the Stop hook.

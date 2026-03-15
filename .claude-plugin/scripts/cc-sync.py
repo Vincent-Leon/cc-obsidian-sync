@@ -316,7 +316,15 @@ def prompt_lang(cfg):
 
 
 def cmd_setup():
-    """Interactive configuration wizard with FNS JSON quick-config support."""
+    """Non-interactive setup. Accepts FNS JSON or individual --key=value args.
+
+    Usage:
+      setup '{"api":"...","apiToken":"...","vault":"..."}'
+      setup --url=... --token=... --vault=...
+      setup --lang=zh-CN
+      setup --device=MyMac
+      setup --sync-dir=cc-sync
+    """
     cfg = cfg_load() or {
         "lang": "en",
         "device_name": os.uname().nodename.split(".")[0],
@@ -324,67 +332,40 @@ def cmd_setup():
         "fns_api": {"url": "", "token": "", "vault": ""},
     }
 
-    # Language selection first
-    cfg["lang"] = prompt_lang(cfg)
-    cfg_save(cfg)
+    args = sys.argv[2:]
+    args_text = " ".join(args).strip()
 
-    title = t("setup_title")
-    pad = (38 - len(title)) // 2
-    print(f"\n  \u2554{'═'*38}\u2557")
-    print(f"  \u2551{' '*pad}{title}{' '*(38 - pad - len(title))}\u2551")
-    print(f"  \u255a{'═'*38}\u255d\n")
-
-    # Check for FNS JSON in command-line arguments
-    fns_json = None
-    args_text = " ".join(sys.argv[2:]).strip()
-    if args_text:
-        fns_json = parse_fns_json(args_text)
-
-    def apply_fns_json(fns_json):
+    # Try FNS JSON first
+    fns_json = parse_fns_json(args_text) if args_text else None
+    if fns_json:
         cfg["fns_api"]["url"] = fns_json["api"].rstrip("/")
         cfg["fns_api"]["token"] = fns_json["apiToken"]
         cfg["fns_api"]["vault"] = fns_json.get("vault", "")
-        print(f"     API:   {cfg['fns_api']['url']}")
-        print(f"     Token: {cfg['fns_api']['token'][:12]}...")
-        if cfg["fns_api"]["vault"]:
-            print(f"     Vault: {cfg['fns_api']['vault']}")
 
-    if fns_json:
-        print(f"  \u2705 {t('detected_json')}\n")
-        apply_fns_json(fns_json)
-    else:
-        print(f"  \U0001f4a1 {t('tip_paste')}")
-        print(f"     {t('tip_paste_hint')}\n")
-        paste = input(f"  {t('prompt_paste')}: ").strip()
-        fns_json = parse_fns_json(paste) if paste else None
-
-        if fns_json:
-            print(f"\n  \u2705 {t('json_loaded')}")
-            apply_fns_json(fns_json)
-        else:
-            print(f"\n  — {t('fns_api_config')} —")
-            print(f"  {t('fns_api_hint')}\n")
-
-            u = input(f"  {t('prompt_url')} [{cfg['fns_api'].get('url', '')}]: ").strip()
-            if u: cfg["fns_api"]["url"] = u
-
-            tk = input(f"  {t('prompt_token')} [{cfg['fns_api'].get('token', '')[:8] + '...' if cfg['fns_api'].get('token') else ''}]: ").strip()
-            if tk: cfg["fns_api"]["token"] = tk
-
-            v = input(f"  Vault [{cfg['fns_api'].get('vault', '')}]: ").strip()
-            if v: cfg["fns_api"]["vault"] = v
-
-    # Device name
-    dn = input(f"\n  {t('prompt_device')} [{cfg['device_name']}]: ").strip()
-    if dn: cfg["device_name"] = dn
-
-    # Sync directory
-    sd = input(f"  {t('prompt_sync_dir')} [{cfg.get('sync_dir', 'cc-sync')}]: ").strip()
-    if sd: cfg["sync_dir"] = sd
+    # Parse --key=value args
+    for arg in args:
+        if arg.startswith("--"):
+            k, _, v = arg[2:].partition("=")
+            if k == "url":       cfg["fns_api"]["url"] = v
+            elif k == "token":   cfg["fns_api"]["token"] = v
+            elif k == "vault":   cfg["fns_api"]["vault"] = v
+            elif k == "lang":    cfg["lang"] = v
+            elif k == "device":  cfg["device_name"] = v
+            elif k == "sync-dir": cfg["sync_dir"] = v
 
     CC_LOGS.mkdir(parents=True, exist_ok=True)
     cfg_save(cfg)
 
+    # Print result
+    api = cfg["fns_api"]
+    print(f"\n  CC Obsidian Sync — Config\n")
+    print(f"  Language:  {LANG_NAMES.get(cfg.get('lang', 'en'), 'English')}")
+    print(f"  Device:    {cfg['device_name']}")
+    print(f"  API:       {api.get('url')}")
+    print(f"  Vault:     {api.get('vault')}")
+    print(f"  Token:     {api['token'][:12]}..." if api.get('token') else "  Token:     (not set)")
+    print(f"  Sync dir:  {cfg.get('sync_dir', 'cc-sync')}")
+    print(f"  Config:    {CONFIG_FILE}")
     print(f"\n  \u2705 {t('config_saved')} {CONFIG_FILE}")
     print(f"\n  {t('next_steps')}\n")
 
