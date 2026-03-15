@@ -27,6 +27,113 @@ STATE_FILE   = CONFIG_DIR / "state.json"
 LOG_FILE     = CONFIG_DIR / "sync.log"
 CC_LOGS      = HOME / ".claude" / "conversation-logs"
 
+# ── i18n ─────────────────────────────────────────────────────
+STRINGS = {
+    "en": {
+        "setup_title":       "CC Obsidian Sync — Setup Wizard",
+        "detected_json":     "Detected FNS configuration JSON",
+        "tip_paste":         "Tip: paste FNS JSON config for quick setup, or press Enter for manual config",
+        "tip_paste_hint":    "(from FNS management panel → repo → copy config)",
+        "prompt_paste":      "Paste FNS JSON (or Enter to skip)",
+        "json_loaded":       "FNS config loaded",
+        "fns_api_config":    "FNS API Configuration",
+        "fns_api_hint":      "(Get these from your FNS management panel → repository → viewConfig)",
+        "prompt_url":        "FNS server URL",
+        "prompt_token":      "API Token",
+        "prompt_repo_id":    "Repo ID",
+        "prompt_device":     "Device name",
+        "prompt_sync_dir":   "Sync directory in vault",
+        "prompt_lang":       "Language / 语言",
+        "config_saved":      "Config saved to",
+        "next_steps":        "Next: restart Claude Code to activate the Stop hook,\n  then run /cc-sync:test to verify the FNS connection.",
+        "not_configured":    "Not configured. Run /cc-sync:setup",
+        "synced":            "Synced",
+        "files":             "file(s)",
+        "nothing_new":       "Nothing new",
+        "upload_ok":         "Upload: OK",
+        "upload_failed":     "Upload: Failed",
+        "check_config":      "Check config",
+        "or_reconfigure":    "Or try /cc-sync:setup to reconfigure",
+        "processed":         "Processed",
+        "conversations":     "conversation(s)",
+        "recent_activity":   "Recent activity:",
+        "no_log":            "No log yet.",
+        "select_lang":       "Select language",
+    },
+    "zh-CN": {
+        "setup_title":       "CC Obsidian Sync — 配置向导",
+        "detected_json":     "检测到 FNS 配置 JSON",
+        "tip_paste":         "提示：粘贴 FNS JSON 配置快速设置，或按 Enter 手动配置",
+        "tip_paste_hint":    "（从 FNS 管理面板 → 笔记库 → 复制配置）",
+        "prompt_paste":      "粘贴 FNS JSON（或按 Enter 跳过）",
+        "json_loaded":       "FNS 配置已加载",
+        "fns_api_config":    "FNS API 配置",
+        "fns_api_hint":      "（从 FNS 管理面板 → 笔记库 → 查看配置获取）",
+        "prompt_url":        "FNS 服务器地址",
+        "prompt_token":      "API Token",
+        "prompt_repo_id":    "仓库 ID",
+        "prompt_device":     "设备名称",
+        "prompt_sync_dir":   "笔记库中的同步目录",
+        "prompt_lang":       "Language / 语言",
+        "config_saved":      "配置已保存到",
+        "next_steps":        "下一步：重启 Claude Code 以激活 Stop hook，\n  然后运行 /cc-sync:test 验证 FNS 连接。",
+        "not_configured":    "未配置，请运行 /cc-sync:setup",
+        "synced":            "已同步",
+        "files":             "个文件",
+        "nothing_new":       "没有新内容",
+        "upload_ok":         "上传：成功",
+        "upload_failed":     "上传：失败",
+        "check_config":      "检查配置",
+        "or_reconfigure":    "或尝试 /cc-sync:setup 重新配置",
+        "processed":         "已处理",
+        "conversations":     "个对话",
+        "recent_activity":   "最近活动：",
+        "no_log":            "暂无日志。",
+        "select_lang":       "选择语言",
+    },
+    "zh-TW": {
+        "setup_title":       "CC Obsidian Sync — 設定精靈",
+        "detected_json":     "偵測到 FNS 設定 JSON",
+        "tip_paste":         "提示：貼上 FNS JSON 設定快速完成配置，或按 Enter 手動設定",
+        "tip_paste_hint":    "（從 FNS 管理面板 → 筆記庫 → 複製設定）",
+        "prompt_paste":      "貼上 FNS JSON（或按 Enter 跳過）",
+        "json_loaded":       "FNS 設定已載入",
+        "fns_api_config":    "FNS API 設定",
+        "fns_api_hint":      "（從 FNS 管理面板 → 筆記庫 → 檢視設定取得）",
+        "prompt_url":        "FNS 伺服器位址",
+        "prompt_token":      "API Token",
+        "prompt_repo_id":    "儲存庫 ID",
+        "prompt_device":     "裝置名稱",
+        "prompt_sync_dir":   "筆記庫中的同步目錄",
+        "prompt_lang":       "Language / 語言",
+        "config_saved":      "設定已儲存到",
+        "next_steps":        "下一步：重新啟動 Claude Code 以啟用 Stop hook，\n  然後執行 /cc-sync:test 驗證 FNS 連線。",
+        "not_configured":    "未設定，請執行 /cc-sync:setup",
+        "synced":            "已同步",
+        "files":             "個檔案",
+        "nothing_new":       "沒有新內容",
+        "upload_ok":         "上傳：成功",
+        "upload_failed":     "上傳：失敗",
+        "check_config":      "檢查設定",
+        "or_reconfigure":    "或嘗試 /cc-sync:setup 重新設定",
+        "processed":         "已處理",
+        "conversations":     "個對話",
+        "recent_activity":   "最近活動：",
+        "no_log":            "暫無日誌。",
+        "select_lang":       "選擇語言",
+    },
+}
+
+LANG_NAMES = {"en": "English", "zh-CN": "简体中文", "zh-TW": "繁體中文"}
+
+def get_lang():
+    cfg = cfg_load()
+    return (cfg or {}).get("lang", "en")
+
+def t(key):
+    lang = get_lang()
+    return STRINGS.get(lang, STRINGS["en"]).get(key, STRINGS["en"].get(key, key))
+
 # ── Logging ──────────────────────────────────────────────────
 def log(msg, echo=False):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -129,12 +236,11 @@ def make_title(md):
     for ln in lines:
         if ln.startswith("# ") and "Conversation" not in ln:
             return san(ln[2:].strip())
-    # Fallback: use first user message
     for i, ln in enumerate(lines):
-        if "**User:**" in ln or "\u{1f464}" in ln:
+        if "**User:**" in ln or "\U0001f464" in ln:
             for s in lines[i+1:]:
                 s = s.strip()
-                if s and not s.startswith(("---", "\u{1f916}", "**")):
+                if s and not s.startswith(("---", "\U0001f916", "**")):
                     return san(" ".join(re.sub(r'[#*`\[\]]', '', s).split()[:8]))
     return "untitled"
 
@@ -148,7 +254,6 @@ def process(cfg, state, echo=False):
     content = md.read_text(encoding="utf-8", errors="replace")
     if len(content.strip().split("\n")) < 5: return 0
 
-    # Build filename: {date}_{title}.md
     ts = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})", md.stem)
     date = ts.group(1) if ts else datetime.now().strftime("%Y-%m-%d")
     title = make_title(md)
@@ -178,17 +283,39 @@ def parse_fns_json(text):
     return None
 
 
+def prompt_lang(cfg):
+    """Prompt user to select language. Returns chosen lang code."""
+    print(f"\n  — {t('select_lang')} —\n")
+    langs = list(LANG_NAMES.items())
+    for i, (code, name) in enumerate(langs, 1):
+        cur = " *" if code == cfg.get("lang", "en") else ""
+        print(f"    {i}. {name}{cur}")
+    choice = input(f"\n  [{cfg.get('lang', 'en')}]: ").strip()
+    if choice in ("1", "2", "3"):
+        return langs[int(choice) - 1][0]
+    if choice in LANG_NAMES:
+        return choice
+    return cfg.get("lang", "en")
+
+
 def cmd_setup():
     """Interactive configuration wizard with FNS JSON quick-config support."""
-    print("\n  \u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557")
-    print("  \u2551   CC Obsidian Sync \u2014 Setup Wizard    \u2551")
-    print("  \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d\n")
-
     cfg = cfg_load() or {
+        "lang": "en",
         "device_name": os.uname().nodename.split(".")[0],
         "sync_dir": "cc-sync",
         "fns_api": {"url": "", "token": "", "repo_id": "", "upload_endpoint": "/api/note/upload"},
     }
+
+    # Language selection first
+    cfg["lang"] = prompt_lang(cfg)
+    cfg_save(cfg)
+
+    title = t("setup_title")
+    pad = (38 - len(title)) // 2
+    print(f"\n  \u2554{'═'*38}\u2557")
+    print(f"  \u2551{' '*pad}{title}{' '*(38 - pad - len(title))}\u2551")
+    print(f"  \u255a{'═'*38}\u255d\n")
 
     # Check for FNS JSON in command-line arguments
     fns_json = None
@@ -197,7 +324,7 @@ def cmd_setup():
         fns_json = parse_fns_json(args_text)
 
     if fns_json:
-        print("  \u2705 Detected FNS configuration JSON\n")
+        print(f"  \u2705 {t('detected_json')}\n")
         cfg["fns_api"]["url"] = fns_json["api"].rstrip("/")
         cfg["fns_api"]["token"] = fns_json["apiToken"]
         print(f"     API:   {cfg['fns_api']['url']}")
@@ -205,53 +332,52 @@ def cmd_setup():
         if fns_json.get("vault"):
             print(f"     Vault: {fns_json['vault']}")
     else:
-        print("  \U0001f4a1 Tip: paste FNS JSON config for quick setup, or press Enter for manual config")
-        print('     (from FNS management panel \u2192 repo \u2192 copy config)\n')
-        paste = input("  Paste FNS JSON (or Enter to skip): ").strip()
+        print(f"  \U0001f4a1 {t('tip_paste')}")
+        print(f"     {t('tip_paste_hint')}\n")
+        paste = input(f"  {t('prompt_paste')}: ").strip()
         fns_json = parse_fns_json(paste) if paste else None
 
         if fns_json:
             cfg["fns_api"]["url"] = fns_json["api"].rstrip("/")
             cfg["fns_api"]["token"] = fns_json["apiToken"]
-            print(f"\n  \u2705 FNS config loaded")
+            print(f"\n  \u2705 {t('json_loaded')}")
             print(f"     API:   {cfg['fns_api']['url']}")
             print(f"     Token: {cfg['fns_api']['token'][:12]}...")
             if fns_json.get("vault"):
                 print(f"     Vault: {fns_json['vault']}")
         else:
-            print("\n  \u2014 FNS API Configuration \u2014")
-            print("  (Get these from your FNS management panel \u2192 repository \u2192 viewConfig)\n")
+            print(f"\n  — {t('fns_api_config')} —")
+            print(f"  {t('fns_api_hint')}\n")
 
-            u = input(f"  FNS server URL [{cfg['fns_api'].get('url', '')}]: ").strip()
+            u = input(f"  {t('prompt_url')} [{cfg['fns_api'].get('url', '')}]: ").strip()
             if u: cfg["fns_api"]["url"] = u
 
-            t = input(f"  API Token [{cfg['fns_api'].get('token', '')[:8] + '...' if cfg['fns_api'].get('token') else ''}]: ").strip()
-            if t: cfg["fns_api"]["token"] = t
+            tk = input(f"  {t('prompt_token')} [{cfg['fns_api'].get('token', '')[:8] + '...' if cfg['fns_api'].get('token') else ''}]: ").strip()
+            if tk: cfg["fns_api"]["token"] = tk
 
-            r = input(f"  Repo ID [{cfg['fns_api'].get('repo_id', '')}]: ").strip()
+            r = input(f"  {t('prompt_repo_id')} [{cfg['fns_api'].get('repo_id', '')}]: ").strip()
             if r: cfg["fns_api"]["repo_id"] = r
 
     # Device name
-    dn = input(f"\n  Device name [{cfg['device_name']}]: ").strip()
+    dn = input(f"\n  {t('prompt_device')} [{cfg['device_name']}]: ").strip()
     if dn: cfg["device_name"] = dn
 
     # Sync directory
-    sd = input(f"  Sync directory in vault [{cfg.get('sync_dir', 'cc-sync')}]: ").strip()
+    sd = input(f"  {t('prompt_sync_dir')} [{cfg.get('sync_dir', 'cc-sync')}]: ").strip()
     if sd: cfg["sync_dir"] = sd
 
     CC_LOGS.mkdir(parents=True, exist_ok=True)
     cfg_save(cfg)
 
-    print(f"\n  \u2705 Config saved to {CONFIG_FILE}")
-    print(f"\n  Next: restart Claude Code to activate the Stop hook,")
-    print(f"  then run /cc-sync:test to verify the FNS connection.\n")
+    print(f"\n  \u2705 {t('config_saved')} {CONFIG_FILE}")
+    print(f"\n  {t('next_steps')}\n")
 
 
 def cmd_hook():
     """Stop hook entry point. Pushes latest conversation to FNS."""
     cfg = cfg_load()
     if not cfg or not cfg.get("fns_api", {}).get("token"):
-        log("Not configured \u2014 run /cc-sync:setup"); return 0
+        log("Not configured — run /cc-sync:setup"); return 0
     state = state_load()
     n = process(cfg, state)
     if n: log(f"Synced {n} file(s) (device={cfg.get('device_name')})")
@@ -259,16 +385,19 @@ def cmd_hook():
 
 def cmd_run():
     cfg = cfg_load()
-    if not cfg: print("  Not configured. Run /cc-sync:setup"); return 1
+    if not cfg: print(f"  {t('not_configured')}"); return 1
     print(f"  Device: {cfg['device_name']}\n")
     state = state_load()
     n = process(cfg, state, echo=True)
-    print(f"\n  {'\u2705 Synced ' + str(n) + ' file(s)' if n else '\U0001f4ed Nothing new'}")
+    if n:
+        print(f"\n  \u2705 {t('synced')} {n} {t('files')}")
+    else:
+        print(f"\n  \U0001f4ed {t('nothing_new')}")
 
 
 def cmd_test():
     cfg = cfg_load()
-    if not cfg: print("  Not configured. Run /cc-sync:setup"); return 1
+    if not cfg: print(f"  {t('not_configured')}"); return 1
 
     api = cfg.get("fns_api", {})
     print(f"  URL:     {api.get('url')}")
@@ -278,35 +407,39 @@ def cmd_test():
     sync_dir = cfg.get("sync_dir", "cc-sync")
     test = f"CC-Sync connectivity test.\nDate: {datetime.now().isoformat()}\nSafe to delete.\n"
     ok, msg = fns_upload(cfg, f"{sync_dir}/.cc-sync-test.md", test)
-    print(f"  Upload: {'\u2705 OK' if ok else '\u274c Failed'}")
-    if not ok:
+    if ok:
+        print(f"  \u2705 {t('upload_ok')}")
+    else:
+        print(f"  \u274c {t('upload_failed')}")
         print(f"  Error: {msg}")
-        print(f"\n  \U0001f4a1 Check config: {CONFIG_FILE}")
-        print(f"     Or try /cc-sync:setup to reconfigure")
+        print(f"\n  \U0001f4a1 {t('check_config')}: {CONFIG_FILE}")
+        print(f"     {t('or_reconfigure')}")
 
 
 def cmd_status():
     cfg = cfg_load()
     if not cfg:
-        print("  Not configured. Run /cc-sync:setup"); return 1
+        print(f"  {t('not_configured')}"); return 1
 
     state = state_load()
+    lang_name = LANG_NAMES.get(cfg.get("lang", "en"), "English")
+    print(f"  Language:  {lang_name}")
     print(f"  Device:    {cfg.get('device_name')}")
     print(f"  FNS URL:   {cfg.get('fns_api', {}).get('url')}")
     print(f"  Sync dir:  {cfg.get('sync_dir', 'cc-sync')}")
-    print(f"  Processed: {len(state)} conversation(s)")
+    print(f"  {t('processed')}  {len(state)} {t('conversations')}")
     print(f"  Config:    {CONFIG_FILE}")
     print(f"  Log:       {LOG_FILE}")
 
     if LOG_FILE.exists():
         lines = LOG_FILE.read_text().strip().split("\n")
-        print(f"\n  Recent activity:")
+        print(f"\n  {t('recent_activity')}")
         for l in lines[-3:]:
             print(f"    {l}")
 
 
 def cmd_log():
-    if not LOG_FILE.exists(): print("  No log yet."); return 0
+    if not LOG_FILE.exists(): print(f"  {t('no_log')}"); return 0
     for l in LOG_FILE.read_text().strip().split("\n")[-30:]:
         print(l)
 
@@ -321,7 +454,7 @@ def main():
     elif cmd == "status": cmd_status()
     elif cmd == "log":    cmd_log()
     else:
-        print("  cc-sync.py \u2014 CC \u2192 Obsidian via FNS")
+        print("  cc-sync.py — CC → Obsidian via FNS")
         print("  Commands: setup, hook, run, test, status, log")
 
 if __name__ == "__main__":
