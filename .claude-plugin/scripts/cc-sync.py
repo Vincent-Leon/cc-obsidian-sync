@@ -40,7 +40,7 @@ STRINGS = {
         "fns_api_hint":      "(Get these from your FNS management panel → repository → viewConfig)",
         "prompt_url":        "FNS server URL",
         "prompt_token":      "API Token",
-        "prompt_repo_id":    "Repo ID",
+        "prompt_vault":       "Vault",
         "prompt_device":     "Device name",
         "prompt_sync_dir":   "Sync directory in vault",
         "prompt_lang":       "Language / 语言",
@@ -79,7 +79,7 @@ STRINGS = {
         "fns_api_hint":      "（从 FNS 管理面板 → 笔记库 → 查看配置获取）",
         "prompt_url":        "FNS 服务器地址",
         "prompt_token":      "API Token",
-        "prompt_repo_id":    "仓库 ID",
+        "prompt_vault":       "笔记库名称",
         "prompt_device":     "设备名称",
         "prompt_sync_dir":   "笔记库中的同步目录",
         "prompt_lang":       "Language / 语言",
@@ -118,7 +118,7 @@ STRINGS = {
         "fns_api_hint":      "（從 FNS 管理面板 → 筆記庫 → 檢視設定取得）",
         "prompt_url":        "FNS 伺服器位址",
         "prompt_token":      "API Token",
-        "prompt_repo_id":    "儲存庫 ID",
+        "prompt_vault":       "筆記庫名稱",
         "prompt_device":     "裝置名稱",
         "prompt_sync_dir":   "筆記庫中的同步目錄",
         "prompt_lang":       "Language / 語言",
@@ -219,7 +219,7 @@ def fns_call(cfg, endpoint, data, method="POST"):
 def fns_upload(cfg, path, content):
     """Create or update a note via FNS REST API (POST /api/note)."""
     api = cfg["fns_api"]
-    vault = api.get("vault", api.get("repo_id", ""))
+    vault = api.get("vault", "")
     payload = {
         "vault": vault,
         "path": path,
@@ -321,7 +321,7 @@ def cmd_setup():
         "lang": "en",
         "device_name": os.uname().nodename.split(".")[0],
         "sync_dir": "cc-sync",
-        "fns_api": {"url": "", "token": "", "repo_id": "", "upload_endpoint": "/api/note/upload"},
+        "fns_api": {"url": "", "token": "", "vault": ""},
     }
 
     # Language selection first
@@ -340,14 +340,18 @@ def cmd_setup():
     if args_text:
         fns_json = parse_fns_json(args_text)
 
-    if fns_json:
-        print(f"  \u2705 {t('detected_json')}\n")
+    def apply_fns_json(fns_json):
         cfg["fns_api"]["url"] = fns_json["api"].rstrip("/")
         cfg["fns_api"]["token"] = fns_json["apiToken"]
+        cfg["fns_api"]["vault"] = fns_json.get("vault", "")
         print(f"     API:   {cfg['fns_api']['url']}")
         print(f"     Token: {cfg['fns_api']['token'][:12]}...")
-        if fns_json.get("vault"):
-            print(f"     Vault: {fns_json['vault']}")
+        if cfg["fns_api"]["vault"]:
+            print(f"     Vault: {cfg['fns_api']['vault']}")
+
+    if fns_json:
+        print(f"  \u2705 {t('detected_json')}\n")
+        apply_fns_json(fns_json)
     else:
         print(f"  \U0001f4a1 {t('tip_paste')}")
         print(f"     {t('tip_paste_hint')}\n")
@@ -355,13 +359,8 @@ def cmd_setup():
         fns_json = parse_fns_json(paste) if paste else None
 
         if fns_json:
-            cfg["fns_api"]["url"] = fns_json["api"].rstrip("/")
-            cfg["fns_api"]["token"] = fns_json["apiToken"]
             print(f"\n  \u2705 {t('json_loaded')}")
-            print(f"     API:   {cfg['fns_api']['url']}")
-            print(f"     Token: {cfg['fns_api']['token'][:12]}...")
-            if fns_json.get("vault"):
-                print(f"     Vault: {fns_json['vault']}")
+            apply_fns_json(fns_json)
         else:
             print(f"\n  — {t('fns_api_config')} —")
             print(f"  {t('fns_api_hint')}\n")
@@ -372,8 +371,8 @@ def cmd_setup():
             tk = input(f"  {t('prompt_token')} [{cfg['fns_api'].get('token', '')[:8] + '...' if cfg['fns_api'].get('token') else ''}]: ").strip()
             if tk: cfg["fns_api"]["token"] = tk
 
-            r = input(f"  {t('prompt_repo_id')} [{cfg['fns_api'].get('repo_id', '')}]: ").strip()
-            if r: cfg["fns_api"]["repo_id"] = r
+            v = input(f"  Vault [{cfg['fns_api'].get('vault', '')}]: ").strip()
+            if v: cfg["fns_api"]["vault"] = v
 
     # Device name
     dn = input(f"\n  {t('prompt_device')} [{cfg['device_name']}]: ").strip()
@@ -417,9 +416,9 @@ def cmd_test():
     if not cfg: print(f"  {t('not_configured')}"); return 1
 
     api = cfg.get("fns_api", {})
-    print(f"  URL:     {api.get('url')}")
-    print(f"  Repo ID: {api.get('repo_id')}")
-    print(f"  Token:   {api.get('token', '')[:12]}...\n")
+    print(f"  URL:   {api.get('url')}")
+    print(f"  Vault: {api.get('vault')}")
+    print(f"  Token: {api.get('token', '')[:12]}...\n")
 
     sync_dir = cfg.get("sync_dir", "cc-sync")
     test = f"CC-Sync connectivity test.\nDate: {datetime.now().isoformat()}\nSafe to delete.\n"
@@ -442,7 +441,9 @@ def cmd_status():
     lang_name = LANG_NAMES.get(cfg.get("lang", "en"), "English")
     print(f"  Language:  {lang_name}")
     print(f"  Device:    {cfg.get('device_name')}")
-    print(f"  FNS URL:   {cfg.get('fns_api', {}).get('url')}")
+    api = cfg.get("fns_api", {})
+    print(f"  FNS URL:   {api.get('url')}")
+    print(f"  Vault:     {api.get('vault')}")
     print(f"  Sync dir:  {cfg.get('sync_dir', 'cc-sync')}")
     print(f"  {t('processed')}  {len(state)} {t('conversations')}")
     print(f"  Config:    {CONFIG_FILE}")
