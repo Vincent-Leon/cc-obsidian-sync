@@ -193,8 +193,8 @@ def san(name):
     return re.sub(r'-+', '-', re.sub(r'[<>:"/\\|?*\s]', '-', name)).strip('-. ')[:80] or "untitled"
 
 # ── FNS API ──────────────────────────────────────────────────
-def fns_call(cfg, endpoint, data):
-    """POST to FNS REST API. Returns (ok, response_or_error)."""
+def fns_call(cfg, endpoint, data, method="POST"):
+    """Call FNS REST API. Returns (ok, response_or_error)."""
     api = cfg["fns_api"]
     url = api["url"].rstrip("/") + endpoint
     body = json.dumps(data).encode("utf-8")
@@ -203,49 +203,29 @@ def fns_call(cfg, endpoint, data):
         "Authorization": f'Bearer {api["token"]}',
         "token": api["token"],
     }
-    req = urllib.request.Request(url, data=body, method="POST", headers=headers)
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            return True, json.loads(r.read().decode())
+        with urllib.request.urlopen(req, timeout=30) as r:
+            resp = json.loads(r.read().decode())
+            # FNS returns HTTP 200 but uses code/status in body for errors
+            if isinstance(resp, dict) and resp.get("status") is False:
+                return False, f"FNS error {resp.get('code')}: {resp.get('message', '')}"
+            return True, resp
     except urllib.error.HTTPError as e:
         return False, f"HTTP {e.code}: {e.read().decode()[:300]}"
     except Exception as e:
         return False, str(e)
 
 def fns_upload(cfg, path, content):
-    """Upload or update a note via FNS REST API."""
+    """Create or update a note via FNS REST API (POST /api/note)."""
     api = cfg["fns_api"]
-    ep = api.get("upload_endpoint", "/api/note/upload")
-    content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
-
+    vault = api.get("vault", api.get("repo_id", ""))
     payload = {
-        "repo_id": api.get("repo_id", 0),
-        "path": path,
-        "content": content_b64,
-        "is_base64": True,
-    }
-
-    ok, resp = fns_call(cfg, ep, payload)
-    if ok:
-        return True, resp
-
-    # Fallback: try without base64
-    payload_plain = {
-        "repo_id": api.get("repo_id", 0),
+        "vault": vault,
         "path": path,
         "content": content,
     }
-    for alt in ["/api/note/upload", "/api/note/save", "/api/note/create", "/api/file/upload"]:
-        if alt == ep:
-            continue
-        ok2, resp2 = fns_call(cfg, alt, payload_plain)
-        if ok2:
-            cfg["fns_api"]["upload_endpoint"] = alt
-            cfg_save(cfg)
-            log(f"Auto-detected working endpoint: {alt}")
-            return True, resp2
-
-    return False, resp
+    return fns_call(cfg, "/api/note", payload)
 
 # ── Conversation parsing ────────────────────────────────────
 def find_latest():
@@ -254,18 +234,19 @@ def find_latest():
     return max(mds, key=lambda f: f.stat().st_mtime) if mds else None
 
 def make_title(md):
-    """Extract a short title from conversation file."""
+    """Extract a short title from the first user message in a conversation file."""
     content = md.read_text(encoding="utf-8", errors="replace")
     lines = content.strip().split("\n")
+    # Find first user message (supports "## USER", "**User:**", etc.)
+    in_user = False
     for ln in lines:
-        if ln.startswith("# ") and "Conversation" not in ln:
-            return san(ln[2:].strip())
-    for i, ln in enumerate(lines):
-        if "**User:**" in ln or "\U0001f464" in ln:
-            for s in lines[i+1:]:
-                s = s.strip()
-                if s and not s.startswith(("---", "\U0001f916", "**")):
-                    return san(" ".join(re.sub(r'[#*`\[\]]', '', s).split()[:8]))
+        stripped = ln.strip()
+        if re.match(r'^##\s+USER\s*$', stripped, re.IGNORECASE) or "**User:**" in stripped:
+            in_user = True
+            continue
+        if in_user:
+            if stripped and not stripped.startswith(("---", "##", "**")):
+                return san(" ".join(re.sub(r'[#*`\[\]]', '', stripped).split()[:8]))
     return "untitled"
 
 # ── Pipeline ─────────────────────────────────────────────────
@@ -285,9 +266,10 @@ def sync_one(cfg, state, md, echo=False):
 
     ts = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})", md.stem)
     date = ts.group(1) if ts else datetime.now().strftime("%Y-%m-%d")
+    time = ts.group(2) if ts else datetime.now().strftime("%H-%M-%S")
     title = make_title(md)
     sync_dir = cfg.get("sync_dir", "cc-sync")
-    rel_path = f"{sync_dir}/{date}_{title}.md"
+    rel_path = f"{sync_dir}/{date}_{time}_{title}.md"
 
     ok, msg = fns_upload(cfg, rel_path, content)
     icon = "\u2705" if ok else "\u274c"
