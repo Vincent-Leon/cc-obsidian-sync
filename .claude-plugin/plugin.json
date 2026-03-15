@@ -1,6 +1,6 @@
 {
   "name": "cc-obsidian-sync",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Auto-sync Claude Code conversations to Obsidian via Fast Note Sync.",
   "author": {
     "name": "Vincent Leon"
