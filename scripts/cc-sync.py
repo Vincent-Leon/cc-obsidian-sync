@@ -299,8 +299,19 @@ def process(cfg, state, echo=False):
 
 # ── Subcommands ──────────────────────────────────────────────
 
+def parse_fns_json(text):
+    """Parse FNS JSON config block: {"api": "...", "apiToken": "...", "vault": "..."}"""
+    try:
+        obj = json.loads(text)
+        if "api" in obj and "apiToken" in obj:
+            return obj
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return None
+
+
 def cmd_setup():
-    """Interactive configuration wizard."""
+    """Interactive configuration wizard with FNS JSON quick-config support."""
     print("\n  ╔══════════════════════════════════════╗")
     print("  ║   CC Obsidian Sync — Setup Wizard    ║")
     print("  ╚══════════════════════════════════════╝\n")
@@ -313,41 +324,78 @@ def cmd_setup():
         "obsidian": {"ai_dir": "AI-Knowledge", "daily_dir": "Daily", "daily_format": "%Y-%m-%d", "daily_heading": "## AI conversations"},
     }
 
-    # Device name
-    dn = input(f"  Device name [{cfg['device_name']}]: ").strip()
-    if dn: cfg["device_name"] = dn
+    # Check for FNS JSON in command-line arguments
+    fns_json = None
+    args_text = " ".join(sys.argv[2:]).strip()
+    if args_text:
+        fns_json = parse_fns_json(args_text)
 
-    # Sync method
-    # Auto-detect FNS local storage
-    fns_local = ""
-    for d in ["/data/fast-note-sync/storage", "/opt/fast-note/storage", str(HOME / "fast-note-sync" / "storage")]:
-        for vd in Path(d).glob("repos/*/vault") if Path(d).exists() else []:
-            fns_local = str(vd); break
-        if fns_local: break
-
-    if fns_local:
-        print(f"\n  🔍 Detected FNS storage at: {fns_local}")
-        m = input("  Use direct file write? (faster, recommended) [Y/n]: ").strip().lower()
-        if m != "n":
-            cfg["sync_method"] = "direct"
-            cfg["fns_direct"]["vault_path"] = fns_local
-        else:
-            cfg["sync_method"] = "api"
-    else:
+    if fns_json:
+        # Quick config from FNS JSON
+        print("  ✅ Detected FNS configuration JSON\n")
         cfg["sync_method"] = "api"
+        cfg["fns_api"]["url"] = fns_json["api"].rstrip("/")
+        cfg["fns_api"]["token"] = fns_json["apiToken"]
+        if "vault" in fns_json:
+            cfg["fns_api"]["vault"] = fns_json["vault"]
+        print(f"     API:   {cfg['fns_api']['url']}")
+        print(f"     Token: {cfg['fns_api']['token'][:12]}...")
+        if fns_json.get("vault"):
+            print(f"     Vault: {fns_json['vault']}")
+    else:
+        # Interactive: offer paste-JSON shortcut first
+        print("  💡 Tip: paste FNS JSON config for quick setup, or press Enter for manual config")
+        print('     (from FNS management panel → repo → copy config)\n')
+        paste = input("  Paste FNS JSON (or Enter to skip): ").strip()
+        fns_json = parse_fns_json(paste) if paste else None
 
-    # FNS API config (always collect — useful even in direct mode as fallback)
-    print("\n  — FNS API Configuration —")
-    print("  (Get these from your FNS management panel → repository → viewConfig)\n")
+        if fns_json:
+            cfg["sync_method"] = "api"
+            cfg["fns_api"]["url"] = fns_json["api"].rstrip("/")
+            cfg["fns_api"]["token"] = fns_json["apiToken"]
+            if "vault" in fns_json:
+                cfg["fns_api"]["vault"] = fns_json["vault"]
+            print(f"\n  ✅ FNS config loaded")
+            print(f"     API:   {cfg['fns_api']['url']}")
+            print(f"     Token: {cfg['fns_api']['token'][:12]}...")
+            if fns_json.get("vault"):
+                print(f"     Vault: {fns_json['vault']}")
+        else:
+            # Fall back to manual field-by-field input
+            # Sync method — auto-detect FNS local storage
+            fns_local = ""
+            for d in ["/data/fast-note-sync/storage", "/opt/fast-note/storage", str(HOME / "fast-note-sync" / "storage")]:
+                for vd in Path(d).glob("repos/*/vault") if Path(d).exists() else []:
+                    fns_local = str(vd); break
+                if fns_local: break
 
-    u = input(f"  FNS server URL [{cfg['fns_api'].get('url', '')}]: ").strip()
-    if u: cfg["fns_api"]["url"] = u
+            if fns_local:
+                print(f"\n  🔍 Detected FNS storage at: {fns_local}")
+                m = input("  Use direct file write? (faster, recommended) [Y/n]: ").strip().lower()
+                if m != "n":
+                    cfg["sync_method"] = "direct"
+                    cfg["fns_direct"]["vault_path"] = fns_local
+                else:
+                    cfg["sync_method"] = "api"
+            else:
+                cfg["sync_method"] = "api"
 
-    t = input(f"  API Token [{cfg['fns_api'].get('token', '')[:8] + '...' if cfg['fns_api'].get('token') else ''}]: ").strip()
-    if t: cfg["fns_api"]["token"] = t
+            # FNS API config
+            print("\n  — FNS API Configuration —")
+            print("  (Get these from your FNS management panel → repository → viewConfig)\n")
 
-    r = input(f"  Repo ID [{cfg['fns_api'].get('repo_id', '')}]: ").strip()
-    if r: cfg["fns_api"]["repo_id"] = r
+            u = input(f"  FNS server URL [{cfg['fns_api'].get('url', '')}]: ").strip()
+            if u: cfg["fns_api"]["url"] = u
+
+            t = input(f"  API Token [{cfg['fns_api'].get('token', '')[:8] + '...' if cfg['fns_api'].get('token') else ''}]: ").strip()
+            if t: cfg["fns_api"]["token"] = t
+
+            r = input(f"  Repo ID [{cfg['fns_api'].get('repo_id', '')}]: ").strip()
+            if r: cfg["fns_api"]["repo_id"] = r
+
+    # Device name
+    dn = input(f"\n  Device name [{cfg['device_name']}]: ").strip()
+    if dn: cfg["device_name"] = dn
 
     # Obsidian settings
     print("\n  — Obsidian Settings —\n")
