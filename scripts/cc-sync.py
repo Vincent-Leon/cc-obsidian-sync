@@ -59,6 +59,14 @@ STRINGS = {
         "recent_activity":   "Recent activity:",
         "no_log":            "No log yet.",
         "select_lang":       "Select language",
+        "export_scanning":   "Scanning conversations...",
+        "export_found":      "Found",
+        "export_new":        "new",
+        "export_skipped":    "already synced",
+        "export_progress":   "Exporting",
+        "export_done":       "Export complete",
+        "export_failed_n":   "failed",
+        "export_no_new":     "All conversations already synced.",
     },
     "zh-CN": {
         "setup_title":       "CC Obsidian Sync — 配置向导",
@@ -90,6 +98,14 @@ STRINGS = {
         "recent_activity":   "最近活动：",
         "no_log":            "暂无日志。",
         "select_lang":       "选择语言",
+        "export_scanning":   "正在扫描对话...",
+        "export_found":      "发现",
+        "export_new":        "条新对话",
+        "export_skipped":    "条已同步",
+        "export_progress":   "导出中",
+        "export_done":       "导出完成",
+        "export_failed_n":   "条失败",
+        "export_no_new":     "所有对话均已同步。",
     },
     "zh-TW": {
         "setup_title":       "CC Obsidian Sync — 設定精靈",
@@ -121,6 +137,14 @@ STRINGS = {
         "recent_activity":   "最近活動：",
         "no_log":            "暫無日誌。",
         "select_lang":       "選擇語言",
+        "export_scanning":   "正在掃描對話...",
+        "export_found":      "發現",
+        "export_new":        "筆新對話",
+        "export_skipped":    "筆已同步",
+        "export_progress":   "匯出中",
+        "export_done":       "匯出完成",
+        "export_failed_n":   "筆失敗",
+        "export_no_new":     "所有對話均已同步。",
     },
 }
 
@@ -245,14 +269,19 @@ def make_title(md):
     return "untitled"
 
 # ── Pipeline ─────────────────────────────────────────────────
-def process(cfg, state, echo=False):
-    md = find_latest()
-    if not md: return 0
+def find_all():
+    """Return all conversation .md files sorted by mtime (oldest first)."""
+    if not CC_LOGS.exists(): return []
+    mds = [f for f in CC_LOGS.glob("conversation_*.md") if not f.is_symlink()]
+    return sorted(mds, key=lambda f: f.stat().st_mtime)
+
+def sync_one(cfg, state, md, echo=False):
+    """Sync a single conversation file. Returns True on success, None if skipped, False on failure."""
     h = md5(str(md))
-    if state.get(str(md)) == h: return 0
+    if state.get(str(md)) == h: return None  # already synced
 
     content = md.read_text(encoding="utf-8", errors="replace")
-    if len(content.strip().split("\n")) < 5: return 0
+    if len(content.strip().split("\n")) < 5: return None
 
     ts = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})", md.stem)
     date = ts.group(1) if ts else datetime.now().strftime("%Y-%m-%d")
@@ -261,14 +290,20 @@ def process(cfg, state, echo=False):
     rel_path = f"{sync_dir}/{date}_{title}.md"
 
     ok, msg = fns_upload(cfg, rel_path, content)
-    status = "\u2705" if ok else "\u274c"
-    log(f"{status} {rel_path}", echo=echo)
+    icon = "\u2705" if ok else "\u274c"
+    log(f"{icon} {rel_path}", echo=echo)
 
     if ok:
         state[str(md)] = h
         state_save(state)
-        return 1
-    return 0
+        return True
+    return False
+
+def process(cfg, state, echo=False):
+    md = find_latest()
+    if not md: return 0
+    result = sync_one(cfg, state, md, echo=echo)
+    return 1 if result is True else 0
 
 # ── Subcommands ──────────────────────────────────────────────
 
@@ -438,6 +473,52 @@ def cmd_status():
             print(f"    {l}")
 
 
+def cmd_export():
+    """Scan all conversations and sync any that haven't been uploaded yet."""
+    cfg = cfg_load()
+    if not cfg: print(f"  {t('not_configured')}"); return 1
+
+    state = state_load()
+    all_mds = find_all()
+
+    print(f"  {t('export_scanning')}")
+
+    # Partition into new vs already synced
+    new, skipped = [], 0
+    for md in all_mds:
+        h = md5(str(md))
+        if state.get(str(md)) == h:
+            skipped += 1
+        else:
+            content = md.read_text(encoding="utf-8", errors="replace")
+            if len(content.strip().split("\n")) >= 5:
+                new.append(md)
+            else:
+                skipped += 1
+
+    print(f"  {t('export_found')} {len(new)} {t('export_new')}, {skipped} {t('export_skipped')}\n")
+
+    if not new:
+        print(f"  {t('export_no_new')}")
+        return 0
+
+    ok_count, fail_count = 0, 0
+    for i, md in enumerate(new, 1):
+        print(f"  [{i}/{len(new)}] {t('export_progress')} {md.name}...", end="", flush=True)
+        result = sync_one(cfg, state, md)
+        if result is True:
+            ok_count += 1
+            print(" \u2705")
+        else:
+            fail_count += 1
+            print(" \u274c")
+
+    print(f"\n  {t('export_done')}: {ok_count} {t('files')}", end="")
+    if fail_count:
+        print(f", {fail_count} {t('export_failed_n')}", end="")
+    print()
+
+
 def cmd_log():
     if not LOG_FILE.exists(): print(f"  {t('no_log')}"); return 0
     for l in LOG_FILE.read_text().strip().split("\n")[-30:]:
@@ -450,12 +531,13 @@ def main():
     if   cmd == "setup":  cmd_setup()
     elif cmd == "hook":   cmd_hook()
     elif cmd == "run":    cmd_run()
+    elif cmd == "export": cmd_export()
     elif cmd == "test":   cmd_test()
     elif cmd == "status": cmd_status()
     elif cmd == "log":    cmd_log()
     else:
         print("  cc-sync.py — CC → Obsidian via FNS")
-        print("  Commands: setup, hook, run, test, status, log")
+        print("  Commands: setup, hook, run, export, test, status, log")
 
 if __name__ == "__main__":
     try: main()

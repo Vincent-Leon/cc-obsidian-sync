@@ -43,6 +43,7 @@ JSON 可從 FNS 管理面板（筆記庫頁面）直接複製。
 | 命令 | 說明 |
 |------|------|
 | `/cc-sync:setup` | 設定 FNS 連線 |
+| `/cc-sync:export` | 批次匯出所有未同步的對話 |
 | `/cc-sync:test` | 測試 API 連通性 |
 | `/cc-sync:run` | 手動同步最新對話 |
 | `/cc-sync:status` | 檢視設定和同步狀態 |

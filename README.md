@@ -43,6 +43,7 @@ Then restart Claude Code. Every conversation is now auto-synced.
 | Command | Description |
 |---------|-------------|
 | `/cc-sync:setup` | Configure FNS connection |
+| `/cc-sync:export` | Bulk export all unsynchronized conversations |
 | `/cc-sync:test` | Test API connectivity |
 | `/cc-sync:run` | Manually sync latest conversation |
 | `/cc-sync:status` | Show config and sync state |
