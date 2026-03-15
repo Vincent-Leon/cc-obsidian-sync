@@ -4,7 +4,7 @@
 
 Auto-sync Claude Code conversations to Obsidian via [Fast Note Sync](https://github.com/haierkeys/fast-note-sync-service).
 
-Raw conversation files are pushed to your Obsidian vault as-is — no extra processing, no opinionated folder structure. Just sync.
+Conversations are parsed from JSONL, deduplicated by session, and pushed to your Obsidian vault with per-message timestamps. No extra processing, no opinionated folder structure. Just sync.
 
 ## Install
 
@@ -12,32 +12,40 @@ Add the plugin marketplace and install:
 
 ```
 /plugin marketplace add https://github.com/Vincent-Leon/cc-obsidian-sync.git
-/plugin install cc-obsidian-sync@Vincent-Leon/cc-obsidian-sync
+/plugin install cc-obsidian-sync@cc-obsidian-sync
 ```
 
-Or for local development:
+## Update & Uninstall
 
+Plugins installed from a marketplace are managed through the plugin system:
+
+```bash
+# Update the marketplace catalog (fetches latest versions)
+/plugin marketplace update cc-obsidian-sync
+
+# Update the installed plugin to latest version
+/plugin update cc-obsidian-sync@cc-obsidian-sync
+
+# Uninstall
+/plugin uninstall cc-obsidian-sync@cc-obsidian-sync
+
+# Remove marketplace entirely (also uninstalls its plugins)
+/plugin marketplace remove cc-obsidian-sync
 ```
-claude --plugin-dir /path/to/cc-obsidian-sync
-```
+
+> **Note:** After updating, restart Claude Code to load the new plugin code.
+
+You can also manage plugins interactively via `/plugin` → **Installed** / **Marketplaces** tabs.
 
 ## Setup
 
 After installing, run:
 
 ```
-/cc-sync:setup
-```
-
-You can paste the FNS JSON config directly for quick setup:
-
-```
 /cc-sync:setup {"api": "https://your-fns-server.com", "apiToken": "your-token", "vault": "Documents"}
 ```
 
 The JSON can be copied from the FNS management panel (repository page).
-
-Or run `/cc-sync:setup` without arguments for interactive mode.
 
 Then restart Claude Code. Every conversation is now auto-synced.
 
@@ -55,10 +63,15 @@ Then restart Claude Code. Every conversation is now auto-synced.
 ## How it works
 
 ```
-CC Stop hook → read latest conversation → push to FNS → Obsidian syncs
+CC Stop hook → parse JSONL → deduplicate by session → push to FNS → Obsidian syncs
 ```
 
-Conversations are saved to `{sync_dir}/{date}_{title}.md` (default: `cc-sync/`).
+- Conversations are parsed from `.jsonl` files (not `.md`) for structured data
+- Deduplicated by `sessionId` — same session saved multiple times only syncs once
+- Files are named by conversation title: `{sync_dir}/{title}.md` (default dir: `cc-sync/`)
+- Title conflicts are auto-numbered: `title.md`, `title (2).md`, `title (3).md`
+- Each message includes a timestamp: `### User [14:30]`
+- Content changes are tracked by hash — updates overwrite in place, no duplicates
 
 The plugin only handles sync. Organizing notes (folders, tags, daily notes, Dataview queries, etc.) is left to Obsidian.
 

@@ -4,7 +4,7 @@
 
 通过 [Fast Note Sync](https://github.com/haierkeys/fast-note-sync-service) 将 Claude Code 对话自动同步到 Obsidian。
 
-对话原文直接推送到你的 Obsidian 笔记库 — 不做额外处理，不预设目录结构。只做同步。
+对话从 JSONL 解析，按会话去重，带有每条消息的时间戳推送到你的 Obsidian 笔记库。不做额外处理，不预设目录结构。只做同步。
 
 ## 安装
 
@@ -12,32 +12,40 @@
 
 ```
 /plugin marketplace add https://github.com/Vincent-Leon/cc-obsidian-sync.git
-/plugin install cc-obsidian-sync@Vincent-Leon/cc-obsidian-sync
+/plugin install cc-obsidian-sync@cc-obsidian-sync
 ```
 
-或本地开发模式：
+## 更新与卸载
 
+通过市场安装的插件，更新和卸载都通过插件系统管理：
+
+```bash
+# 更新市场目录（拉取最新版本信息）
+/plugin marketplace update cc-obsidian-sync
+
+# 更新已安装的插件到最新版本
+/plugin update cc-obsidian-sync@cc-obsidian-sync
+
+# 卸载插件
+/plugin uninstall cc-obsidian-sync@cc-obsidian-sync
+
+# 移除整个市场（同时卸载其下所有插件）
+/plugin marketplace remove cc-obsidian-sync
 ```
-claude --plugin-dir /path/to/cc-obsidian-sync
-```
+
+> **注意：** 更新后需要重启 Claude Code 才能加载新版插件代码。
+
+也可以通过 `/plugin` → **Installed** / **Marketplaces** 标签页进行交互式管理。
 
 ## 配置
 
 安装后运行：
 
 ```
-/cc-sync:setup
-```
-
-支持直接粘贴 FNS JSON 配置快速完成设置：
-
-```
 /cc-sync:setup {"api": "https://your-fns-server.com", "apiToken": "your-token", "vault": "Documents"}
 ```
 
 JSON 可从 FNS 管理面板（笔记库页面）直接复制。
-
-也可以不带参数运行 `/cc-sync:setup` 进入交互式配置。
 
 配置完成后重启 Claude Code，即可自动同步每次对话。
 
@@ -55,10 +63,15 @@ JSON 可从 FNS 管理面板（笔记库页面）直接复制。
 ## 工作原理
 
 ```
-CC Stop hook → 读取最新对话 → 推送到 FNS → Obsidian 同步
+CC Stop hook → 解析 JSONL → 按会话去重 → 推送到 FNS → Obsidian 同步
 ```
 
-对话保存到 `{sync_dir}/{date}_{title}.md`（默认目录：`cc-sync/`）。
+- 从 `.jsonl` 文件解析对话（而非 `.md`），获取结构化数据
+- 按 `sessionId` 去重 — 同一会话多次保存只同步一次
+- 以对话标题命名文件：`{sync_dir}/{标题}.md`（默认目录：`cc-sync/`）
+- 标题冲突自动编号：`标题.md`、`标题 (2).md`、`标题 (3).md`
+- 每条消息带时间戳：`### User [14:30]`
+- 通过内容哈希追踪变更 — 更新覆盖原文件，不产生重复
 
 插件只负责同步。笔记的整理（目录、标签、日记、Dataview 查询等）交给 Obsidian 处理。
 
