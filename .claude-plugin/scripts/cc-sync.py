@@ -183,14 +183,22 @@ def state_save(s):
     STATE_FILE.write_text(json.dumps(s, ensure_ascii=False))
 
 # ── Helpers ──────────────────────────────────────────────────
-def md5(p):
+def md5_file(p):
     h = hashlib.md5()
     with open(p, "rb") as f:
         for c in iter(lambda: f.read(8192), b""): h.update(c)
     return h.hexdigest()
 
+def md5_str(s):
+    return hashlib.md5(s.encode("utf-8")).hexdigest()
+
 def san(name):
-    return re.sub(r'-+', '-', re.sub(r'[<>:"/\\|?*\s]', '-', name)).strip('-. ')[:80] or "untitled"
+    """Sanitize a string for use as a filename. Keeps CJK chars, replaces illegal chars with -."""
+    s = re.sub(r'[<>:"/\\|?*]', '-', name)       # illegal filename chars
+    s = re.sub(r'[\n\r\t]', ' ', s)                # newlines to space
+    s = re.sub(r'\s+', ' ', s).strip()             # collapse whitespace
+    s = s.strip('-. ')
+    return s[:50] or "untitled"
 
 # ── FNS API ──────────────────────────────────────────────────
 def fns_call(cfg, endpoint, data, method="POST"):
@@ -227,64 +235,228 @@ def fns_upload(cfg, path, content):
     }
     return fns_call(cfg, "/api/note", payload)
 
-# ── Conversation parsing ────────────────────────────────────
-def find_latest():
-    if not CC_LOGS.exists(): return None
-    mds = [f for f in CC_LOGS.glob("conversation_*.md") if not f.is_symlink()]
-    return max(mds, key=lambda f: f.stat().st_mtime) if mds else None
+# ── JSONL Parsing ───────────────────────────────────────────
+def parse_jsonl(jsonl_path):
+    """Parse a conversation JSONL file into structured data.
 
-def make_title(md):
-    """Extract a short title from the first user message in a conversation file."""
-    content = md.read_text(encoding="utf-8", errors="replace")
-    lines = content.strip().split("\n")
-    # Find first user message (supports "## USER", "**User:**", etc.)
+    Returns dict with keys:
+        session_id: str
+        date: str (YYYY-MM-DD)
+        project: str (cwd from first message)
+        messages: list of {role, content, time_str}
+        title: str (sanitized first real user message)
+    Returns None if file is empty or has no real messages.
+    """
+    messages = []
+    session_id = None
+    project = None
+    first_date = None
+
+    for line in jsonl_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        # Skip non-message types
+        msg_type = obj.get("type")
+        if msg_type not in ("user", "assistant"):
+            continue
+
+        # Extract session metadata from first message
+        if session_id is None:
+            session_id = obj.get("sessionId", "")
+        if project is None:
+            project = obj.get("cwd", "")
+
+        # Skip meta messages (system injected)
+        if obj.get("isMeta"):
+            continue
+
+        msg = obj.get("message", {})
+        content_parts = msg.get("content", "")
+        role = msg.get("role", msg_type)
+
+        # Extract text content
+        if isinstance(content_parts, list):
+            texts = [p.get("text", "") for p in content_parts if isinstance(p, dict) and p.get("type") == "text"]
+            text = "\n".join(t for t in texts if t)
+        elif isinstance(content_parts, str):
+            text = content_parts
+        else:
+            continue
+
+        # Skip empty and system-injected messages
+        if not text.strip():
+            continue
+        stripped_text = text.strip()
+        if re.match(r'^<(local-command-|command-name>|command-message>)', stripped_text):
+            continue
+
+        # Tag messages that are IDE/system context (not real user input)
+        is_context = bool(re.match(r'^<(ide_selection|system-reminder)', stripped_text))
+
+        # Parse timestamp
+        ts_str = obj.get("timestamp", "")
+        time_str = ""
+        if ts_str:
+            try:
+                dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                # Convert UTC to local time
+                local_dt = dt.astimezone()
+                time_str = local_dt.strftime("%H:%M")
+                if first_date is None:
+                    first_date = local_dt.strftime("%Y-%m-%d")
+            except (ValueError, OSError):
+                pass
+
+        messages.append({"role": role, "content": text, "time_str": time_str, "is_context": is_context})
+
+    if not messages or not session_id:
+        return None
+
+    # Extract title from first real user message (skip context-only messages)
+    title = "untitled"
+    for m in messages:
+        if m["role"] == "user" and not m.get("is_context"):
+            raw = re.sub(r'[#*`\[\]]', '', m["content"]).strip()
+            raw = raw.split("\n")[0].strip()  # first line only
+            if raw:
+                title = san(raw)
+                break
+
+    return {
+        "session_id": session_id,
+        "date": first_date or datetime.now().strftime("%Y-%m-%d"),
+        "project": project or "",
+        "messages": messages,
+        "title": title,
+    }
+
+
+def format_conversation(parsed):
+    """Generate markdown with per-message timestamps from parsed JSONL data."""
+    lines = []
+    lines.append(f"# {parsed['title']}")
+    lines.append("")
+    lines.append(f"> Session: {parsed['session_id']}")
+    lines.append(f"> Date: {parsed['date']}")
+    if parsed["project"]:
+        lines.append(f"> Project: {parsed['project']}")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    for msg in parsed["messages"]:
+        # Skip IDE selection / system context messages from output
+        if msg.get("is_context"):
+            continue
+        role_label = "User" if msg["role"] == "user" else "Assistant"
+        ts = f" [{msg['time_str']}]" if msg["time_str"] else ""
+        lines.append(f"### {role_label}{ts}")
+        lines.append("")
+        lines.append(msg["content"])
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def make_title_from_md(md_path):
+    """Fallback: extract title from .md file when JSONL is unavailable."""
+    content = md_path.read_text(encoding="utf-8", errors="replace")
     in_user = False
-    for ln in lines:
+    for ln in content.strip().split("\n"):
         stripped = ln.strip()
         if re.match(r'^##\s+USER\s*$', stripped, re.IGNORECASE) or "**User:**" in stripped:
             in_user = True
             continue
         if in_user:
             if stripped and not stripped.startswith(("---", "##", "**")):
-                return san(" ".join(re.sub(r'[#*`\[\]]', '', stripped).split()[:8]))
+                return san(re.sub(r'[#*`\[\]]', '', stripped).strip())
     return "untitled"
 
+
 # ── Pipeline ─────────────────────────────────────────────────
-def find_all():
-    """Return all conversation .md files sorted by mtime (oldest first)."""
-    if not CC_LOGS.exists(): return []
-    mds = [f for f in CC_LOGS.glob("conversation_*.md") if not f.is_symlink()]
-    return sorted(mds, key=lambda f: f.stat().st_mtime)
+def find_all_jsonl():
+    """Return all conversation .jsonl files sorted by mtime (oldest first)."""
+    if not CC_LOGS.exists():
+        return []
+    files = [f for f in CC_LOGS.glob("conversation_*.jsonl") if not f.is_symlink()]
+    return sorted(files, key=lambda f: f.stat().st_mtime)
 
-def sync_one(cfg, state, md, echo=False):
-    """Sync a single conversation file. Returns True on success, None if skipped, False on failure."""
-    h = md5(str(md))
-    if state.get(str(md)) == h: return None  # already synced
 
-    content = md.read_text(encoding="utf-8", errors="replace")
-    if len(content.strip().split("\n")) < 5: return None
+def find_latest_jsonl():
+    """Return the most recently modified conversation .jsonl file."""
+    if not CC_LOGS.exists():
+        return None
+    files = [f for f in CC_LOGS.glob("conversation_*.jsonl") if not f.is_symlink()]
+    return max(files, key=lambda f: f.stat().st_mtime) if files else None
 
-    ts = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})", md.stem)
-    date = ts.group(1) if ts else datetime.now().strftime("%Y-%m-%d")
-    time = ts.group(2) if ts else datetime.now().strftime("%H-%M-%S")
-    title = make_title(md)
+
+def resolve_path(sync_dir, title, session_id, state):
+    """Determine FNS path for a session, handling title conflicts with numbering."""
+    # If this session was already synced, reuse its path
+    entry = state.get(session_id)
+    if isinstance(entry, dict) and "fns_path" in entry:
+        return entry["fns_path"]
+
+    # Collect all paths already used by other sessions
+    used_paths = set()
+    for sid, val in state.items():
+        if isinstance(val, dict) and "fns_path" in val:
+            used_paths.add(val["fns_path"])
+
+    base = f"{sync_dir}/{title}.md"
+    if base not in used_paths:
+        return base
+
+    for i in range(2, 10000):
+        candidate = f"{sync_dir}/{title} ({i}).md"
+        if candidate not in used_paths:
+            return candidate
+    return f"{sync_dir}/{title} ({session_id[:8]}).md"
+
+
+def sync_one(cfg, state, jsonl_path, echo=False):
+    """Sync a single conversation. Returns True on success, None if skipped, False on failure."""
+    # Parse JSONL
+    parsed = parse_jsonl(jsonl_path)
+    if not parsed or len(parsed["messages"]) < 2:
+        return None  # empty or trivial conversation
+
+    session_id = parsed["session_id"]
+    content_hash = md5_str(json.dumps(parsed["messages"], ensure_ascii=False))
+
+    # Check if already synced with same content
+    entry = state.get(session_id)
+    if isinstance(entry, dict) and entry.get("hash") == content_hash:
+        return None  # already synced, no changes
+
+    # Generate formatted content and resolve path
+    content = format_conversation(parsed)
     sync_dir = cfg.get("sync_dir", "cc-sync")
-    rel_path = f"{sync_dir}/{date}_{time}_{title}.md"
+    rel_path = resolve_path(sync_dir, parsed["title"], session_id, state)
 
     ok, msg = fns_upload(cfg, rel_path, content)
     icon = "\u2705" if ok else "\u274c"
     log(f"{icon} {rel_path}", echo=echo)
 
     if ok:
-        state[str(md)] = h
+        state[session_id] = {"hash": content_hash, "fns_path": rel_path}
         state_save(state)
         return True
     return False
 
+
 def process(cfg, state, echo=False):
-    md = find_latest()
-    if not md: return 0
-    result = sync_one(cfg, state, md, echo=echo)
+    """Sync the latest conversation."""
+    jsonl = find_latest_jsonl()
+    if not jsonl:
+        return 0
+    result = sync_one(cfg, state, jsonl, echo=echo)
     return 1 if result is True else 0
 
 # ── Subcommands ──────────────────────────────────────────────
@@ -437,28 +609,44 @@ def cmd_status():
             print(f"    {l}")
 
 
+def dedupe_by_session(jsonl_files):
+    """Group JSONL files by session_id, keep only the latest (most complete) per session.
+    Returns list of (jsonl_path, parsed_data) tuples sorted by date."""
+    sessions = {}  # session_id -> (jsonl_path, parsed_data, mtime)
+    for jf in jsonl_files:
+        parsed = parse_jsonl(jf)
+        if not parsed or len(parsed["messages"]) < 2:
+            continue
+        sid = parsed["session_id"]
+        mtime = jf.stat().st_mtime
+        if sid not in sessions or mtime > sessions[sid][2]:
+            sessions[sid] = (jf, parsed, mtime)
+    return [(jf, parsed) for jf, parsed, _ in sorted(sessions.values(), key=lambda x: x[2])]
+
+
 def cmd_export():
     """Scan all conversations and sync any that haven't been uploaded yet."""
     cfg = cfg_load()
     if not cfg: print(f"  {t('not_configured')}"); return 1
 
     state = state_load()
-    all_mds = find_all()
+    all_jsonl = find_all_jsonl()
 
     print(f"  {t('export_scanning')}")
 
+    # Deduplicate: keep only the latest file per session
+    unique = dedupe_by_session(all_jsonl)
+
     # Partition into new vs already synced
     new, skipped = [], 0
-    for md in all_mds:
-        h = md5(str(md))
-        if state.get(str(md)) == h:
+    for jf, parsed in unique:
+        sid = parsed["session_id"]
+        content_hash = md5_str(json.dumps(parsed["messages"], ensure_ascii=False))
+        entry = state.get(sid)
+        if isinstance(entry, dict) and entry.get("hash") == content_hash:
             skipped += 1
         else:
-            content = md.read_text(encoding="utf-8", errors="replace")
-            if len(content.strip().split("\n")) >= 5:
-                new.append(md)
-            else:
-                skipped += 1
+            new.append(jf)
 
     print(f"  {t('export_found')} {len(new)} {t('export_new')}, {skipped} {t('export_skipped')}\n")
 
@@ -467,12 +655,15 @@ def cmd_export():
         return 0
 
     ok_count, fail_count = 0, 0
-    for i, md in enumerate(new, 1):
-        print(f"  [{i}/{len(new)}] {t('export_progress')} {md.name}...", end="", flush=True)
-        result = sync_one(cfg, state, md)
+    for i, jf in enumerate(new, 1):
+        print(f"  [{i}/{len(new)}] {t('export_progress')} {jf.name}...", end="", flush=True)
+        result = sync_one(cfg, state, jf)
         if result is True:
             ok_count += 1
             print(" \u2705")
+        elif result is None:
+            skipped += 1
+            print(" -")
         else:
             fail_count += 1
             print(" \u274c")
