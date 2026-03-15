@@ -219,7 +219,7 @@ def fns_upload(cfg, path, content):
     content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
 
     payload = {
-        "repo_id": int(api.get("repo_id", 0)),
+        "repo_id": api.get("repo_id", 0),
         "path": path,
         "content": content_b64,
         "is_base64": True,
@@ -231,7 +231,7 @@ def fns_upload(cfg, path, content):
 
     # Fallback: try without base64
     payload_plain = {
-        "repo_id": int(api.get("repo_id", 0)),
+        "repo_id": api.get("repo_id", 0),
         "path": path,
         "content": content,
     }
