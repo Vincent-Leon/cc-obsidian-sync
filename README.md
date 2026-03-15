@@ -1,13 +1,15 @@
+[简体中文](README.zh-CN.md) / [繁體中文](README.zh-TW.md) / [English](README.md)
+
 # cc-obsidian-sync
 
 Auto-sync Claude Code conversations to Obsidian via [Fast Note Sync](https://github.com/haierkeys/fast-note-sync-service).
 
-Every CC response is automatically saved, tagged by project, and pushed to your Obsidian vault — with entries in your daily notes.
+Raw conversation files are pushed to your Obsidian vault as-is — no extra processing, no opinionated folder structure. Just sync.
 
 ## Install
 
 ```
-/plugin marketplace add https://github.com/YOUR_USER/cc-obsidian-sync
+/install github:Vincent-Leon/cc-obsidian-sync
 ```
 
 Or local install:
@@ -24,9 +26,17 @@ After installing, run:
 /cc-sync:setup
 ```
 
-This interactive wizard asks for your FNS server URL, API token, and repo ID (all available from the FNS management panel). On the FNS server itself, it auto-detects the local vault path for direct file writing.
+You can paste the FNS JSON config directly for quick setup:
 
-Then restart Claude Code. That's it — every conversation is now auto-synced.
+```
+/cc-sync:setup {"api": "https://your-fns-server.com", "apiToken": "your-token", "vault": "Documents"}
+```
+
+The JSON can be copied from the FNS management panel (repository page).
+
+Or run `/cc-sync:setup` without arguments for interactive mode.
+
+Then restart Claude Code. Every conversation is now auto-synced.
 
 ## Commands
 
@@ -41,29 +51,20 @@ Then restart Claude Code. That's it — every conversation is now auto-synced.
 ## How it works
 
 ```
-CC Stop hook → save locally → parse conversation → push to FNS → Obsidian syncs
+CC Stop hook → read latest conversation → push to FNS → Obsidian syncs
 ```
 
-Each conversation generates:
-- **Full archive** → `AI-Knowledge/conversations/YYYY-MM-DD_title.md`
-- **Project reference** → `AI-Knowledge/projects/<project>/YYYY-MM-DD_title.md`
-- **Daily entry** → `Daily/YYYY-MM-DD.md` → `## AI conversations` section
+Conversations are saved to `{sync_dir}/{date}_{title}.md` (default: `cc-sync/`).
 
-Notes include YAML frontmatter with device, project, date, time, and tags — compatible with Dataview queries.
+The plugin only handles sync. Organizing notes (folders, tags, daily notes, Dataview queries, etc.) is left to Obsidian.
 
 ## Multi-device
 
-Install on every device (MacBook, servers). Each pushes to the same FNS server. All your Obsidian clients receive updates in real-time via FNS WebSocket sync.
-
-## Sync methods
-
-- **API mode** (default): HTTP push to FNS REST API. Works from any network.
-- **Direct mode** (auto-detected on FNS server): Writes files directly to FNS storage. Fastest, zero network overhead.
+Install on every device. Each pushes to the same FNS server. All your Obsidian clients receive updates in real-time via FNS sync.
 
 ## Requirements
 
 - Python 3.8+
-- `git`, `jq` (for conversation-logger skill)
 - A running [FNS server](https://github.com/haierkeys/fast-note-sync-service) with the Obsidian plugin configured
 
 ## License
