@@ -12,13 +12,9 @@ Use this skill when the user asks about:
 
 ## Available commands
 
-- `/cc-sync:setup` — Configure FNS connection (pass FNS JSON config as argument)
-- `/cc-sync:status` — Show current config and sync state
-- `/cc-sync:test` — Test FNS API connectivity
-- `/cc-sync:run` — Manually sync latest conversation
-- `/cc-sync:export` — Bulk export all unsynchronized conversations
-- `/cc-sync:web` — Open the web dashboard for session management (search, filter, ignore, resync)
-- `/cc-sync:log` — View recent sync log
+- `/cc-sync:web` — Open the web dashboard (the single management entry point)
+
+All configuration, testing, sync operations, and log viewing are done through the dashboard.
 
 ## How it works
 
@@ -28,11 +24,14 @@ A Stop hook fires after every Claude Code session ends, calling `scripts/cc-sync
 3. Pushes to FNS via REST API (`POST /api/note`)
 4. Tracks sync state in the database to avoid duplicates
 
-Conversations can be managed via the web dashboard (`/cc-sync:web`), which supports:
-- Searching by title or project
-- Filtering by status (synced / unsynced / ignored)
-- One-click sync, resync, ignore, and unignore operations
+## Web Dashboard (`/cc-sync:web`)
+
+The dashboard runs on `http://127.0.0.1:8765` and provides three tabs:
+
+- **Conversations** — Search, filter, sort conversations. One-click sync, resync, ignore, unignore. Bulk "Sync All" button.
+- **Settings** — Configure FNS connection (URL, token, vault), device name, sync directory, language. Test connectivity with one click.
+- **Log** — View recent sync activity log.
 
 ## Configuration
 
-Config is stored at `~/.config/cc-sync/config.json`. Database at `~/.config/cc-sync/cc-sync.db`. Use `/cc-sync:setup` to configure.
+Config is stored at `~/.config/cc-sync/config.json`. Database at `~/.config/cc-sync/cc-sync.db`. Configure via the Dashboard Settings tab.

@@ -857,9 +857,6 @@ def cmd_web():
     """Launch the session management dashboard on localhost."""
     from http.server import HTTPServer, BaseHTTPRequestHandler
 
-    cfg = cfg_load()
-    if not cfg: print(f"  {t('not_configured')}"); return 1
-
     # Parse --port and --no-browser
     port = 8765
     open_browser = True
@@ -945,6 +942,41 @@ def cmd_web():
                 stats["total"] = sum(stats.values())
                 json_response(self, stats)
 
+            elif self.path == "/api/config":
+                c = cfg_load() or {}
+                api = c.get("fns_api", {})
+                token = api.get("token", "")
+                json_response(self, {
+                    "lang": c.get("lang", "en"),
+                    "device_name": c.get("device_name", ""),
+                    "sync_dir": c.get("sync_dir", "cc-sync"),
+                    "fns_api": {
+                        "url": api.get("url", ""),
+                        "token_preview": (token[:12] + "...") if len(token) > 12 else token,
+                        "token_set": bool(token),
+                        "vault": api.get("vault", ""),
+                    }
+                })
+
+            elif self.path.startswith("/api/log"):
+                from urllib.parse import urlparse, parse_qs
+                qs = parse_qs(urlparse(self.path).query)
+                limit = int(qs.get("limit", [100])[0])
+                lines = []
+                if LOG_FILE.exists():
+                    all_lines = LOG_FILE.read_text().strip().split("\n")
+                    if all_lines != [""]:
+                        lines = all_lines[-limit:]
+                json_response(self, {"lines": list(reversed(lines)), "total": len(lines)})
+
+            elif self.path == "/api/info":
+                json_response(self, {
+                    "version": "0.3.0",
+                    "db_path": str(DB_FILE),
+                    "config_path": str(CONFIG_FILE),
+                    "log_path": str(LOG_FILE),
+                })
+
             else:
                 self.send_error(404)
 
@@ -960,6 +992,9 @@ def cmd_web():
             now_ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
             if self.path == "/api/sync":
+                cfg = cfg_load()
+                if not cfg or not cfg.get("fns_api", {}).get("token"):
+                    json_response(self, {"ok": False, "message": "Not configured"}, 400); return
                 result = sync_session(cfg, db, sid)
                 if result is True:
                     json_response(self, {"ok": True, "message": "Synced"})
@@ -969,6 +1004,9 @@ def cmd_web():
                     json_response(self, {"ok": False, "message": "Upload failed"}, 500)
 
             elif self.path == "/api/resync":
+                cfg = cfg_load()
+                if not cfg or not cfg.get("fns_api", {}).get("token"):
+                    json_response(self, {"ok": False, "message": "Not configured"}, 400); return
                 db.execute(
                     "UPDATE conversations SET status='unsynced', updated_at=? WHERE session_id=?",
                     (now_ts, sid))
@@ -995,6 +1033,48 @@ def cmd_web():
                 ingest_all(db)
                 total = db.execute("SELECT count(*) as n FROM conversations").fetchone()["n"]
                 json_response(self, {"ok": True, "total": total})
+
+            elif self.path == "/api/config":
+                new_cfg = {
+                    "lang": body.get("lang", "en"),
+                    "device_name": body.get("device_name", ""),
+                    "sync_dir": body.get("sync_dir", "cc-sync"),
+                    "fns_api": {
+                        "url": body.get("fns_api", {}).get("url", ""),
+                        "token": body.get("fns_api", {}).get("token", ""),
+                        "vault": body.get("fns_api", {}).get("vault", ""),
+                    }
+                }
+                # If token is empty string, keep the old one
+                if not new_cfg["fns_api"]["token"]:
+                    old = cfg_load() or {}
+                    new_cfg["fns_api"]["token"] = old.get("fns_api", {}).get("token", "")
+                cfg_save(new_cfg)
+                json_response(self, {"ok": True, "message": "Config saved"})
+
+            elif self.path == "/api/test":
+                import time
+                cfg = cfg_load()
+                if not cfg or not cfg.get("fns_api", {}).get("token"):
+                    json_response(self, {"ok": False, "message": "Not configured", "latency_ms": 0}, 400); return
+                sync_dir = cfg.get("sync_dir", "cc-sync")
+                test_content = f"CC-Sync connectivity test.\nDate: {datetime.now().isoformat()}\nSafe to delete.\n"
+                t0 = time.time()
+                ok, msg = fns_upload(cfg, f"{sync_dir}/.cc-sync-test.md", test_content)
+                latency = int((time.time() - t0) * 1000)
+                json_response(self, {"ok": ok, "message": "OK" if ok else str(msg), "latency_ms": latency})
+
+            elif self.path == "/api/sync-all":
+                cfg = cfg_load()
+                if not cfg or not cfg.get("fns_api", {}).get("token"):
+                    json_response(self, {"ok": False, "message": "Not configured"}, 400); return
+                rows = db.execute("SELECT session_id FROM conversations WHERE status='unsynced'").fetchall()
+                synced, failed = 0, 0
+                for row in rows:
+                    result = sync_session(cfg, db, row["session_id"])
+                    if result is True: synced += 1
+                    elif result is False: failed += 1
+                json_response(self, {"ok": True, "synced": synced, "failed": failed, "total_unsynced": len(rows)})
 
             else:
                 self.send_error(404)
