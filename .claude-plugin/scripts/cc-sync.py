@@ -12,9 +12,12 @@ Subcommands:
   test    Test FNS API connectivity
   status  Show current configuration and sync state
   log     Show recent sync log entries
+  export  Bulk export all unsynchronized conversations
+  ingest  Manually ingest all JSONL files into the database
+  web     Launch the session management dashboard
 """
 
-import base64, hashlib, json, os, re, sys
+import base64, hashlib, json, os, re, sqlite3, sys
 import urllib.request, urllib.error
 from datetime import datetime
 from pathlib import Path
@@ -23,7 +26,7 @@ from pathlib import Path
 HOME         = Path.home()
 CONFIG_DIR   = HOME / ".config" / "cc-sync"
 CONFIG_FILE  = CONFIG_DIR / "config.json"
-STATE_FILE   = CONFIG_DIR / "state.json"
+DB_FILE      = CONFIG_DIR / "cc-sync.db"
 LOG_FILE     = CONFIG_DIR / "sync.log"
 CC_LOGS      = HOME / ".claude" / "conversation-logs"
 
@@ -167,7 +170,7 @@ def log(msg, echo=False):
     if echo:
         print(f"  {msg}")
 
-# ── Config / State ───────────────────────────────────────────
+# ── Config ───────────────────────────────────────────────────
 def cfg_load():
     return json.loads(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else None
 
@@ -175,12 +178,96 @@ def cfg_save(c):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(c, indent=2, ensure_ascii=False))
 
-def state_load():
-    return json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
-
-def state_save(s):
+# ── Database ─────────────────────────────────────────────────
+def db_connect():
+    """Open (or create) the SQLite database. Returns a connection."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(s, ensure_ascii=False))
+    db = sqlite3.connect(str(DB_FILE), timeout=5)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA foreign_keys=ON")
+    db.row_factory = sqlite3.Row
+    db_init_schema(db)
+    return db
+
+def db_init_schema(db):
+    """Create tables if they don't exist."""
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS conversations (
+            session_id    TEXT PRIMARY KEY,
+            title         TEXT NOT NULL,
+            date          TEXT NOT NULL,
+            project       TEXT DEFAULT '',
+            project_path  TEXT DEFAULT '',
+            message_count INTEGER DEFAULT 0,
+            word_count    INTEGER DEFAULT 0,
+            status        TEXT DEFAULT 'unsynced'
+                          CHECK(status IN ('unsynced','synced','ignored')),
+            content_hash  TEXT,
+            synced_path   TEXT,
+            synced_at     TEXT,
+            source_file   TEXT,
+            source_mtime  REAL,
+            created_at    TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
+            updated_at    TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_conv_status ON conversations(status);
+        CREATE INDEX IF NOT EXISTS idx_conv_date   ON conversations(date DESC);
+
+        CREATE TABLE IF NOT EXISTS messages (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL REFERENCES conversations(session_id) ON DELETE CASCADE,
+            seq        INTEGER NOT NULL,
+            role       TEXT NOT NULL,
+            content    TEXT NOT NULL,
+            time_str   TEXT DEFAULT '',
+            is_context INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_msg_session ON messages(session_id, seq);
+
+        CREATE TABLE IF NOT EXISTS extractions (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id   TEXT NOT NULL REFERENCES conversations(session_id) ON DELETE CASCADE,
+            summary      TEXT,
+            result_json  TEXT,
+            llm_model    TEXT,
+            cost_usd     REAL DEFAULT 0,
+            created_at   TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_extractions_session ON extractions(session_id);
+
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version    INTEGER PRIMARY KEY,
+            applied_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime'))
+        );
+        INSERT OR IGNORE INTO schema_version (version) VALUES (1);
+    """)
+    # FTS5 for dashboard search (title + project)
+    try:
+        db.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS conversations_fts USING fts5(
+                session_id UNINDEXED, title, project,
+                content='conversations', content_rowid='rowid'
+            )
+        """)
+        db.executescript("""
+            CREATE TRIGGER IF NOT EXISTS conv_fts_ai AFTER INSERT ON conversations BEGIN
+                INSERT INTO conversations_fts(rowid, session_id, title, project)
+                VALUES (new.rowid, new.session_id, new.title, new.project);
+            END;
+            CREATE TRIGGER IF NOT EXISTS conv_fts_ad AFTER DELETE ON conversations BEGIN
+                INSERT INTO conversations_fts(conversations_fts, rowid, session_id, title, project)
+                VALUES ('delete', old.rowid, old.session_id, old.title, old.project);
+            END;
+            CREATE TRIGGER IF NOT EXISTS conv_fts_au AFTER UPDATE ON conversations BEGIN
+                INSERT INTO conversations_fts(conversations_fts, rowid, session_id, title, project)
+                VALUES ('delete', old.rowid, old.session_id, old.title, old.project);
+                INSERT INTO conversations_fts(rowid, session_id, title, project)
+                VALUES (new.rowid, new.session_id, new.title, new.project);
+            END;
+        """)
+    except Exception:
+        pass  # FTS5 not available on this build; search falls back to LIKE
+    db.commit()
 
 # ── Helpers ──────────────────────────────────────────────────
 def md5_file(p):
@@ -215,7 +302,6 @@ def fns_call(cfg, endpoint, data, method="POST"):
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             resp = json.loads(r.read().decode())
-            # FNS returns HTTP 200 but uses code/status in body for errors
             if isinstance(resp, dict) and resp.get("status") is False:
                 return False, f"FNS error {resp.get('code')}: {resp.get('message', '')}"
             return True, resp
@@ -243,7 +329,7 @@ def parse_jsonl(jsonl_path):
         session_id: str
         date: str (YYYY-MM-DD)
         project: str (cwd from first message)
-        messages: list of {role, content, time_str}
+        messages: list of {role, content, time_str, is_context}
         title: str (sanitized first real user message)
     Returns None if file is empty or has no real messages.
     """
@@ -261,18 +347,15 @@ def parse_jsonl(jsonl_path):
         except json.JSONDecodeError:
             continue
 
-        # Skip non-message types
         msg_type = obj.get("type")
         if msg_type not in ("user", "assistant"):
             continue
 
-        # Extract session metadata from first message
         if session_id is None:
             session_id = obj.get("sessionId", "")
         if project is None:
             project = obj.get("cwd", "")
 
-        # Skip meta messages (system injected)
         if obj.get("isMeta"):
             continue
 
@@ -280,7 +363,6 @@ def parse_jsonl(jsonl_path):
         content_parts = msg.get("content", "")
         role = msg.get("role", msg_type)
 
-        # Extract text content
         if isinstance(content_parts, list):
             texts = [p.get("text", "") for p in content_parts if isinstance(p, dict) and p.get("type") == "text"]
             text = "\n".join(t for t in texts if t)
@@ -289,23 +371,19 @@ def parse_jsonl(jsonl_path):
         else:
             continue
 
-        # Skip empty and system-injected messages
         if not text.strip():
             continue
         stripped_text = text.strip()
         if re.match(r'^<(local-command-|command-name>|command-message>)', stripped_text):
             continue
 
-        # Tag messages that are IDE/system context (not real user input)
         is_context = bool(re.match(r'^<(ide_selection|system-reminder)', stripped_text))
 
-        # Parse timestamp
         ts_str = obj.get("timestamp", "")
         time_str = ""
         if ts_str:
             try:
                 dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                # Convert UTC to local time
                 local_dt = dt.astimezone()
                 time_str = local_dt.strftime("%H:%M")
                 if first_date is None:
@@ -318,12 +396,11 @@ def parse_jsonl(jsonl_path):
     if not messages or not session_id:
         return None
 
-    # Extract title from first real user message (skip context-only messages)
     title = "untitled"
     for m in messages:
         if m["role"] == "user" and not m.get("is_context"):
             raw = re.sub(r'[#*`\[\]]', '', m["content"]).strip()
-            raw = raw.split("\n")[0].strip()  # first line only
+            raw = raw.split("\n")[0].strip()
             if raw:
                 title = san(raw)
                 break
@@ -351,7 +428,6 @@ def format_conversation(parsed):
     lines.append("")
 
     for msg in parsed["messages"]:
-        # Skip IDE selection / system context messages from output
         if msg.get("is_context"):
             continue
         role_label = "User" if msg["role"] == "user" else "Assistant"
@@ -396,68 +472,155 @@ def find_latest_jsonl():
     return max(files, key=lambda f: f.stat().st_mtime) if files else None
 
 
-def resolve_path(sync_dir, title, session_id, state):
-    """Determine FNS path for a session, handling title conflicts with numbering."""
-    # If this session was already synced, reuse its path
-    entry = state.get(session_id)
-    if isinstance(entry, dict) and "fns_path" in entry:
-        return entry["fns_path"]
+# ── Ingest (JSONL → DB) ─────────────────────────────────────
+def ingest_jsonl(db, jsonl_path):
+    """Parse a JSONL file and upsert into the database. Returns session_id or None."""
+    fname = jsonl_path.name
+    mtime = jsonl_path.stat().st_mtime
 
-    # Collect all paths already used by other sessions
-    used_paths = set()
-    for sid, val in state.items():
-        if isinstance(val, dict) and "fns_path" in val:
-            used_paths.add(val["fns_path"])
+    # Fast path: already ingested this exact file version
+    row = db.execute(
+        "SELECT session_id FROM conversations WHERE source_file = ? AND source_mtime = ?",
+        (fname, mtime)
+    ).fetchone()
+    if row:
+        return row["session_id"]
+
+    parsed = parse_jsonl(jsonl_path)
+    if not parsed or len(parsed["messages"]) < 2:
+        return None
+
+    sid = parsed["session_id"]
+    msgs = parsed["messages"]
+    content_hash = md5_str(json.dumps(msgs, ensure_ascii=False))
+    word_count = sum(len(m["content"].split()) for m in msgs)
+    project_name = parsed["project"].split("/")[-1] if parsed["project"] else ""
+    now_ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+    existing = db.execute(
+        "SELECT content_hash, status, source_mtime FROM conversations WHERE session_id = ?",
+        (sid,)
+    ).fetchone()
+
+    if existing:
+        # Only update if this file is newer
+        if existing["source_mtime"] and mtime <= existing["source_mtime"]:
+            return sid
+        new_status = existing["status"]
+        if existing["status"] != "ignored" and existing["content_hash"] != content_hash:
+            new_status = "unsynced"
+        db.execute("""
+            UPDATE conversations SET
+                title=?, date=?, project=?, project_path=?,
+                message_count=?, word_count=?, content_hash=?,
+                source_file=?, source_mtime=?, updated_at=?, status=?
+            WHERE session_id=?
+        """, (parsed["title"], parsed["date"], project_name,
+              parsed["project"], len(msgs), word_count, content_hash,
+              fname, mtime, now_ts, new_status, sid))
+    else:
+        db.execute("""
+            INSERT INTO conversations
+            (session_id, title, date, project, project_path, message_count, word_count,
+             content_hash, source_file, source_mtime, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (sid, parsed["title"], parsed["date"], project_name,
+              parsed["project"], len(msgs), word_count, content_hash,
+              fname, mtime, now_ts, now_ts))
+
+    # Replace messages for this session
+    db.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+    db.executemany(
+        "INSERT INTO messages (session_id, seq, role, content, time_str, is_context) VALUES (?,?,?,?,?,?)",
+        [(sid, i, m["role"], m["content"], m["time_str"], int(m.get("is_context", False)))
+         for i, m in enumerate(msgs)]
+    )
+    db.commit()
+    return sid
+
+
+def ingest_all(db):
+    """Ingest all JSONL files into the database. Returns count of processed sessions."""
+    count = 0
+    for jf in find_all_jsonl():
+        if ingest_jsonl(db, jf):
+            count += 1
+    return count
+
+
+def ingest_latest(db):
+    """Ingest only the most recent JSONL file. Returns session_id or None."""
+    jf = find_latest_jsonl()
+    return ingest_jsonl(db, jf) if jf else None
+
+
+# ── Sync (DB → FNS) ─────────────────────────────────────────
+def resolve_path_db(db, sync_dir, title, session_id):
+    """Determine FNS path for a session, using DB for conflict detection."""
+    # Reuse existing path if already synced
+    row = db.execute(
+        "SELECT synced_path FROM conversations WHERE session_id = ? AND synced_path IS NOT NULL",
+        (session_id,)
+    ).fetchone()
+    if row:
+        return row["synced_path"]
+
+    # Collect all paths in use
+    used = {r["synced_path"] for r in db.execute(
+        "SELECT synced_path FROM conversations WHERE synced_path IS NOT NULL"
+    ).fetchall()}
 
     base = f"{sync_dir}/{title}.md"
-    if base not in used_paths:
+    if base not in used:
         return base
-
     for i in range(2, 10000):
         candidate = f"{sync_dir}/{title} ({i}).md"
-        if candidate not in used_paths:
+        if candidate not in used:
             return candidate
     return f"{sync_dir}/{title} ({session_id[:8]}).md"
 
 
-def sync_one(cfg, state, jsonl_path, echo=False):
-    """Sync a single conversation. Returns True on success, None if skipped, False on failure."""
-    # Parse JSONL
-    parsed = parse_jsonl(jsonl_path)
-    if not parsed or len(parsed["messages"]) < 2:
-        return None  # empty or trivial conversation
+def sync_session(cfg, db, session_id, echo=False):
+    """Sync a single session from DB to FNS. Returns True/None/False."""
+    row = db.execute(
+        "SELECT * FROM conversations WHERE session_id = ? AND status = 'unsynced'",
+        (session_id,)
+    ).fetchone()
+    if not row:
+        return None  # already synced or ignored
 
-    session_id = parsed["session_id"]
-    content_hash = md5_str(json.dumps(parsed["messages"], ensure_ascii=False))
+    # Reconstruct parsed dict from DB for format_conversation()
+    msgs = db.execute(
+        "SELECT role, content, time_str, is_context FROM messages WHERE session_id = ? ORDER BY seq",
+        (session_id,)
+    ).fetchall()
+    parsed = {
+        "session_id": session_id,
+        "date": row["date"],
+        "project": row["project_path"] or row["project"],
+        "title": row["title"],
+        "messages": [{"role": m["role"], "content": m["content"],
+                      "time_str": m["time_str"], "is_context": bool(m["is_context"])} for m in msgs],
+    }
 
-    # Check if already synced with same content
-    entry = state.get(session_id)
-    if isinstance(entry, dict) and entry.get("hash") == content_hash:
-        return None  # already synced, no changes
-
-    # Generate formatted content and resolve path
     content = format_conversation(parsed)
     sync_dir = cfg.get("sync_dir", "cc-sync")
-    rel_path = resolve_path(sync_dir, parsed["title"], session_id, state)
+    rel_path = resolve_path_db(db, sync_dir, row["title"], session_id)
 
     ok, msg = fns_upload(cfg, rel_path, content)
     icon = "\u2705" if ok else "\u274c"
     log(f"{icon} {rel_path}", echo=echo)
 
     if ok:
-        state[session_id] = {"hash": content_hash, "fns_path": rel_path}
-        state_save(state)
+        now_ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        db.execute("""
+            UPDATE conversations SET status='synced', synced_path=?, synced_at=?, updated_at=?
+            WHERE session_id=?
+        """, (rel_path, now_ts, now_ts, session_id))
+        db.commit()
         return True
     return False
 
-
-def process(cfg, state, echo=False):
-    """Sync the latest conversation."""
-    jsonl = find_latest_jsonl()
-    if not jsonl:
-        return 0
-    result = sync_one(cfg, state, jsonl, echo=echo)
-    return 1 if result is True else 0
 
 # ── Subcommands ──────────────────────────────────────────────
 
@@ -488,15 +651,7 @@ def prompt_lang(cfg):
 
 
 def cmd_setup():
-    """Non-interactive setup. Accepts FNS JSON or individual --key=value args.
-
-    Usage:
-      setup '{"api":"...","apiToken":"...","vault":"..."}'
-      setup --url=... --token=... --vault=...
-      setup --lang=zh-CN
-      setup --device=MyMac
-      setup --sync-dir=cc-sync
-    """
+    """Non-interactive setup. Accepts FNS JSON or individual --key=value args."""
     cfg = cfg_load() or {
         "lang": "en",
         "device_name": os.uname().nodename.split(".")[0],
@@ -507,14 +662,12 @@ def cmd_setup():
     args = sys.argv[2:]
     args_text = " ".join(args).strip()
 
-    # Try FNS JSON first
     fns_json = parse_fns_json(args_text) if args_text else None
     if fns_json:
         cfg["fns_api"]["url"] = fns_json["api"].rstrip("/")
         cfg["fns_api"]["token"] = fns_json["apiToken"]
         cfg["fns_api"]["vault"] = fns_json.get("vault", "")
 
-    # Parse --key=value args
     for arg in args:
         if arg.startswith("--"):
             k, _, v = arg[2:].partition("=")
@@ -528,7 +681,6 @@ def cmd_setup():
     CC_LOGS.mkdir(parents=True, exist_ok=True)
     cfg_save(cfg)
 
-    # Print result
     api = cfg["fns_api"]
     print(f"\n  CC Obsidian Sync — Config\n")
     print(f"  Language:  {LANG_NAMES.get(cfg.get('lang', 'en'), 'English')}")
@@ -547,21 +699,32 @@ def cmd_hook():
     cfg = cfg_load()
     if not cfg or not cfg.get("fns_api", {}).get("token"):
         log("Not configured — run /cc-sync:setup"); return 0
-    state = state_load()
-    n = process(cfg, state)
-    if n: log(f"Synced {n} file(s) (device={cfg.get('device_name')})")
+    db = db_connect()
+    sid = ingest_latest(db)
+    if sid:
+        result = sync_session(cfg, db, sid)
+        if result:
+            log(f"Synced 1 file(s) (device={cfg.get('device_name')})")
+    db.close()
 
 
 def cmd_run():
     cfg = cfg_load()
     if not cfg: print(f"  {t('not_configured')}"); return 1
     print(f"  Device: {cfg['device_name']}\n")
-    state = state_load()
-    n = process(cfg, state, echo=True)
-    if n:
-        print(f"\n  \u2705 {t('synced')} {n} {t('files')}")
+    db = db_connect()
+    sid = ingest_latest(db)
+    if sid:
+        result = sync_session(cfg, db, sid, echo=True)
+        if result is True:
+            print(f"\n  \u2705 {t('synced')} 1 {t('files')}")
+        elif result is None:
+            print(f"\n  \U0001f4ed {t('nothing_new')}")
+        else:
+            print(f"\n  \u274c {t('upload_failed')}")
     else:
         print(f"\n  \U0001f4ed {t('nothing_new')}")
+    db.close()
 
 
 def cmd_test():
@@ -590,7 +753,13 @@ def cmd_status():
     if not cfg:
         print(f"  {t('not_configured')}"); return 1
 
-    state = state_load()
+    db = db_connect()
+    stats = {}
+    for row in db.execute("SELECT status, count(*) as n FROM conversations GROUP BY status"):
+        stats[row["status"]] = row["n"]
+    total = sum(stats.values())
+    db.close()
+
     lang_name = LANG_NAMES.get(cfg.get("lang", "en"), "English")
     print(f"  Language:  {lang_name}")
     print(f"  Device:    {cfg.get('device_name')}")
@@ -598,8 +767,15 @@ def cmd_status():
     print(f"  FNS URL:   {api.get('url')}")
     print(f"  Vault:     {api.get('vault')}")
     print(f"  Sync dir:  {cfg.get('sync_dir', 'cc-sync')}")
-    print(f"  {t('processed')}  {len(state)} {t('conversations')}")
+    print(f"  {t('processed')}  {total} {t('conversations')}")
+    if stats:
+        parts = []
+        if stats.get("synced"):    parts.append(f"synced: {stats['synced']}")
+        if stats.get("unsynced"):  parts.append(f"unsynced: {stats['unsynced']}")
+        if stats.get("ignored"):   parts.append(f"ignored: {stats['ignored']}")
+        print(f"  Status:    {', '.join(parts)}")
     print(f"  Config:    {CONFIG_FILE}")
+    print(f"  Database:  {DB_FILE}")
     print(f"  Log:       {LOG_FILE}")
 
     if LOG_FILE.exists():
@@ -609,60 +785,36 @@ def cmd_status():
             print(f"    {l}")
 
 
-def dedupe_by_session(jsonl_files):
-    """Group JSONL files by session_id, keep only the latest (most complete) per session.
-    Returns list of (jsonl_path, parsed_data) tuples sorted by date."""
-    sessions = {}  # session_id -> (jsonl_path, parsed_data, mtime)
-    for jf in jsonl_files:
-        parsed = parse_jsonl(jf)
-        if not parsed or len(parsed["messages"]) < 2:
-            continue
-        sid = parsed["session_id"]
-        mtime = jf.stat().st_mtime
-        if sid not in sessions or mtime > sessions[sid][2]:
-            sessions[sid] = (jf, parsed, mtime)
-    return [(jf, parsed) for jf, parsed, _ in sorted(sessions.values(), key=lambda x: x[2])]
-
-
 def cmd_export():
     """Scan all conversations and sync any that haven't been uploaded yet."""
     cfg = cfg_load()
     if not cfg: print(f"  {t('not_configured')}"); return 1
 
-    state = state_load()
-    all_jsonl = find_all_jsonl()
-
     print(f"  {t('export_scanning')}")
+    db = db_connect()
+    ingest_all(db)
 
-    # Deduplicate: keep only the latest file per session
-    unique = dedupe_by_session(all_jsonl)
+    rows = db.execute(
+        "SELECT session_id, title FROM conversations WHERE status = 'unsynced' ORDER BY date"
+    ).fetchall()
+    total = db.execute("SELECT count(*) as n FROM conversations").fetchone()["n"]
+    synced = total - len(rows)
 
-    # Partition into new vs already synced
-    new, skipped = [], 0
-    for jf, parsed in unique:
-        sid = parsed["session_id"]
-        content_hash = md5_str(json.dumps(parsed["messages"], ensure_ascii=False))
-        entry = state.get(sid)
-        if isinstance(entry, dict) and entry.get("hash") == content_hash:
-            skipped += 1
-        else:
-            new.append(jf)
+    print(f"  {t('export_found')} {len(rows)} {t('export_new')}, {synced} {t('export_skipped')}\n")
 
-    print(f"  {t('export_found')} {len(new)} {t('export_new')}, {skipped} {t('export_skipped')}\n")
-
-    if not new:
+    if not rows:
         print(f"  {t('export_no_new')}")
+        db.close()
         return 0
 
     ok_count, fail_count = 0, 0
-    for i, jf in enumerate(new, 1):
-        print(f"  [{i}/{len(new)}] {t('export_progress')} {jf.name}...", end="", flush=True)
-        result = sync_one(cfg, state, jf)
+    for i, row in enumerate(rows, 1):
+        print(f"  [{i}/{len(rows)}] {t('export_progress')} {row['title']}...", end="", flush=True)
+        result = sync_session(cfg, db, row["session_id"])
         if result is True:
             ok_count += 1
             print(" \u2705")
         elif result is None:
-            skipped += 1
             print(" -")
         else:
             fail_count += 1
@@ -672,6 +824,26 @@ def cmd_export():
     if fail_count:
         print(f", {fail_count} {t('export_failed_n')}", end="")
     print()
+    db.close()
+
+
+def cmd_ingest():
+    """Manually ingest all JSONL files into the database."""
+    db = db_connect()
+    ingest_all(db)
+    total = db.execute("SELECT count(*) as n FROM conversations").fetchone()["n"]
+    stats = {}
+    for row in db.execute("SELECT status, count(*) as n FROM conversations GROUP BY status"):
+        stats[row["status"]] = row["n"]
+    print(f"  Database: {DB_FILE}")
+    print(f"  Total conversations: {total}")
+    if stats:
+        parts = []
+        if stats.get("synced"):    parts.append(f"synced: {stats['synced']}")
+        if stats.get("unsynced"):  parts.append(f"unsynced: {stats['unsynced']}")
+        if stats.get("ignored"):   parts.append(f"ignored: {stats['ignored']}")
+        print(f"  Status: {', '.join(parts)}")
+    db.close()
 
 
 def cmd_log():
@@ -680,19 +852,202 @@ def cmd_log():
         print(l)
 
 
+# ── Web Dashboard ────────────────────────────────────────────
+def cmd_web():
+    """Launch the session management dashboard on localhost."""
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    cfg = cfg_load()
+    if not cfg: print(f"  {t('not_configured')}"); return 1
+
+    # Parse --port and --no-browser
+    port = 8765
+    open_browser = True
+    for arg in sys.argv[2:]:
+        if arg.startswith("--port="):
+            port = int(arg.split("=")[1])
+        elif arg == "--no-browser":
+            open_browser = False
+
+    db = db_connect()
+    print(f"  Ingesting conversations...")
+    ingest_all(db)
+    total = db.execute("SELECT count(*) as n FROM conversations").fetchone()["n"]
+    print(f"  {total} conversations in database.\n")
+
+    html_path = Path(__file__).parent / "dashboard.html"
+
+    def json_response(handler, data, status=200):
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Access-Control-Allow-Origin", "*")
+        handler.end_headers()
+        handler.wfile.write(body)
+
+    class DashboardHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/" or self.path == "/dashboard":
+                if not html_path.exists():
+                    self.send_error(404, "dashboard.html not found")
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(html_path.read_bytes())
+
+            elif self.path.startswith("/api/conversations"):
+                # Parse query params
+                from urllib.parse import urlparse, parse_qs
+                qs = parse_qs(urlparse(self.path).query)
+                status_filter = qs.get("status", [None])[0]
+                query = qs.get("q", [None])[0]
+                sort = qs.get("sort", ["date"])[0]
+                order = qs.get("order", ["desc"])[0]
+                limit = int(qs.get("limit", [200])[0])
+                offset = int(qs.get("offset", [0])[0])
+
+                if query:
+                    # FTS5 search
+                    try:
+                        rows = db.execute("""
+                            SELECT c.* FROM conversations c
+                            JOIN conversations_fts f ON c.session_id = f.session_id
+                            WHERE conversations_fts MATCH ?
+                            ORDER BY c.date DESC LIMIT ? OFFSET ?
+                        """, (query, limit, offset)).fetchall()
+                    except Exception:
+                        # FTS5 not available, fall back to LIKE
+                        rows = db.execute("""
+                            SELECT * FROM conversations
+                            WHERE title LIKE ? OR project LIKE ?
+                            ORDER BY date DESC LIMIT ? OFFSET ?
+                        """, (f"%{query}%", f"%{query}%", limit, offset)).fetchall()
+                elif status_filter:
+                    rows = db.execute(f"""
+                        SELECT * FROM conversations WHERE status = ?
+                        ORDER BY {sort} {'ASC' if order == 'asc' else 'DESC'}
+                        LIMIT ? OFFSET ?
+                    """, (status_filter, limit, offset)).fetchall()
+                else:
+                    rows = db.execute(f"""
+                        SELECT * FROM conversations
+                        ORDER BY {sort} {'ASC' if order == 'asc' else 'DESC'}
+                        LIMIT ? OFFSET ?
+                    """, (limit, offset)).fetchall()
+
+                json_response(self, [dict(r) for r in rows])
+
+            elif self.path == "/api/stats":
+                stats = {}
+                for row in db.execute("SELECT status, count(*) as n FROM conversations GROUP BY status"):
+                    stats[row["status"]] = row["n"]
+                stats["total"] = sum(stats.values())
+                json_response(self, stats)
+
+            else:
+                self.send_error(404)
+
+        def do_POST(self):
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length)) if length else {}
+            except (json.JSONDecodeError, ValueError):
+                json_response(self, {"error": "Invalid JSON"}, 400)
+                return
+
+            sid = body.get("session_id", "")
+            now_ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+            if self.path == "/api/sync":
+                result = sync_session(cfg, db, sid)
+                if result is True:
+                    json_response(self, {"ok": True, "message": "Synced"})
+                elif result is None:
+                    json_response(self, {"ok": False, "message": "Not unsynced"}, 400)
+                else:
+                    json_response(self, {"ok": False, "message": "Upload failed"}, 500)
+
+            elif self.path == "/api/resync":
+                db.execute(
+                    "UPDATE conversations SET status='unsynced', updated_at=? WHERE session_id=?",
+                    (now_ts, sid))
+                db.commit()
+                result = sync_session(cfg, db, sid)
+                ok = result is True
+                json_response(self, {"ok": ok, "message": "Resynced" if ok else "Failed"})
+
+            elif self.path == "/api/ignore":
+                db.execute(
+                    "UPDATE conversations SET status='ignored', updated_at=? WHERE session_id=?",
+                    (now_ts, sid))
+                db.commit()
+                json_response(self, {"ok": True, "message": "Ignored"})
+
+            elif self.path == "/api/unignore":
+                db.execute(
+                    "UPDATE conversations SET status='unsynced', updated_at=? WHERE session_id=? AND status='ignored'",
+                    (now_ts, sid))
+                db.commit()
+                json_response(self, {"ok": True, "message": "Unignored"})
+
+            elif self.path == "/api/ingest":
+                ingest_all(db)
+                total = db.execute("SELECT count(*) as n FROM conversations").fetchone()["n"]
+                json_response(self, {"ok": True, "total": total})
+
+            else:
+                self.send_error(404)
+
+        def do_OPTIONS(self):
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass  # suppress noisy access logs
+
+    try:
+        server = HTTPServer(("127.0.0.1", port), DashboardHandler)
+    except OSError as e:
+        print(f"  \u274c Cannot bind to port {port}: {e}")
+        print(f"  Try: python3 cc-sync.py web --port=8766")
+        db.close()
+        return 1
+
+    url = f"http://127.0.0.1:{port}"
+    print(f"  \u2705 Dashboard: {url}")
+    print(f"  Press Ctrl+C to stop.\n")
+
+    if open_browser:
+        import webbrowser
+        webbrowser.open(url)
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    server.server_close()
+    db.close()
+
+
 # ── Entry ────────────────────────────────────────────────────
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
-    if   cmd == "setup":  cmd_setup()
-    elif cmd == "hook":   cmd_hook()
-    elif cmd == "run":    cmd_run()
-    elif cmd == "export": cmd_export()
-    elif cmd == "test":   cmd_test()
-    elif cmd == "status": cmd_status()
-    elif cmd == "log":    cmd_log()
+    if   cmd == "setup":   cmd_setup()
+    elif cmd == "hook":    cmd_hook()
+    elif cmd == "run":     cmd_run()
+    elif cmd == "export":  cmd_export()
+    elif cmd == "test":    cmd_test()
+    elif cmd == "status":  cmd_status()
+    elif cmd == "log":     cmd_log()
+    elif cmd == "ingest":  cmd_ingest()
+    elif cmd == "web":     cmd_web()
     else:
         print("  cc-sync.py — CC → Obsidian via FNS")
-        print("  Commands: setup, hook, run, export, test, status, log")
+        print("  Commands: setup, hook, run, export, test, status, log, ingest, web")
 
 if __name__ == "__main__":
     try: main()
