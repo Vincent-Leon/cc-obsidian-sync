@@ -1,3 +1,20 @@
+Metadata-Version: 2.4
+Name: cc-obsidian-sync
+Version: 0.3.0
+Summary: Auto-sync Claude Code conversations to Obsidian via Fast Note Sync
+Author: Vincent Leon
+License-Expression: MIT
+Project-URL: Homepage, https://github.com/Vincent-Leon/cc-obsidian-sync
+Project-URL: Repository, https://github.com/Vincent-Leon/cc-obsidian-sync
+Keywords: obsidian,claude-code,sync,fast-note-sync
+Classifier: Development Status :: 3 - Alpha
+Classifier: Environment :: Console
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python :: 3
+Classifier: Topic :: Utilities
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+
 [简体中文](README.zh-CN.md) / [繁體中文](README.zh-TW.md) / [English](README.md)
 
 # cc-obsidian-sync
@@ -8,16 +25,7 @@ Conversations are parsed from JSONL, deduplicated by session, and pushed to your
 
 ## Install
 
-### Option A: pip (recommended)
-
-```bash
-pip install git+https://github.com/Vincent-Leon/cc-obsidian-sync.git
-cc-sync install
-```
-
-This installs the `cc-sync` CLI and registers the Stop hook in Claude Code settings. Restart Claude Code to activate.
-
-### Option B: Claude Code Plugin
+Add the plugin marketplace and install:
 
 ```
 /plugin marketplace add https://github.com/Vincent-Leon/cc-obsidian-sync.git
@@ -26,18 +34,7 @@ This installs the `cc-sync` CLI and registers the Stop hook in Claude Code setti
 
 ## Update & Uninstall
 
-### If installed via pip
-
-```bash
-# Update
-pip install --upgrade git+https://github.com/Vincent-Leon/cc-obsidian-sync.git
-
-# Uninstall
-cc-sync uninstall   # remove hook from Claude Code settings
-pip uninstall cc-obsidian-sync
-```
-
-### If installed via plugin
+Plugins installed from a marketplace are managed through the plugin system:
 
 ```bash
 # Update the marketplace catalog (fetches latest versions)
@@ -54,14 +51,12 @@ pip uninstall cc-obsidian-sync
 ```
 
 > **Note:** After updating, restart Claude Code to load the new plugin code.
->
+
 > **Known issue:** `plugin update` may only fetch without merging. If you're stuck on an old version, run:
->
 > ```bash
 > cd ~/.claude/plugins/marketplaces/cc-obsidian-sync/
 > git pull
 > ```
->
 > Then run `/plugin update cc-obsidian-sync@cc-obsidian-sync` again.
 
 You can also manage plugins interactively via `/plugin` → **Installed** / **Marketplaces** tabs.

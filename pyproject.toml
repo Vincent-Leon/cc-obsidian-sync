@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cc-obsidian-sync"
+version = "0.4.0"
+description = "Auto-sync Claude Code conversations to Obsidian via Fast Note Sync"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.8"
+authors = [{name = "Vincent Leon"}]
+keywords = ["obsidian", "claude-code", "sync", "fast-note-sync"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/Vincent-Leon/cc-obsidian-sync"
+Repository = "https://github.com/Vincent-Leon/cc-obsidian-sync"
+
+[project.scripts]
+cc-sync = "cc_obsidian_sync.core:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cc_obsidian_sync = ["dashboard.html"]

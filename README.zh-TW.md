@@ -8,7 +8,16 @@
 
 ## 安裝
 
-新增外掛市場並安裝：
+### 方式一：pip（推薦）
+
+```bash
+pip install git+https://github.com/Vincent-Leon/cc-obsidian-sync.git
+cc-sync install
+```
+
+安裝 `cc-sync` 命令列工具並註冊 Claude Code 的 Stop hook。安裝後重新啟動 Claude Code 生效。
+
+### 方式二：Claude Code 外掛
 
 ```
 /plugin marketplace add https://github.com/Vincent-Leon/cc-obsidian-sync.git
@@ -17,7 +26,18 @@
 
 ## 更新與移除
 
-透過市場安裝的外掛，更新和移除都透過外掛系統管理：
+### pip 安裝方式
+
+```bash
+# 更新
+pip install --upgrade git+https://github.com/Vincent-Leon/cc-obsidian-sync.git
+
+# 移除
+cc-sync uninstall   # 從 Claude Code 設定中移除 hook
+pip uninstall cc-obsidian-sync
+```
+
+### 外掛安裝方式
 
 ```bash
 # 更新市場目錄（拉取最新版本資訊）
@@ -34,6 +54,15 @@
 ```
 
 > **注意：** 更新後需要重新啟動 Claude Code 才能載入新版外掛程式碼。
+>
+> **已知問題：** `plugin update` 可能只執行了 fetch 而沒有 merge。如果更新後仍是舊版本，請手動執行：
+>
+> ```bash
+> cd ~/.claude/plugins/marketplaces/cc-obsidian-sync/
+> git pull
+> ```
+>
+> 然後重新執行 `/plugin update cc-obsidian-sync@cc-obsidian-sync`。
 
 也可以透過 `/plugin` → **Installed** / **Marketplaces** 分頁進行互動式管理。
 

@@ -8,7 +8,16 @@
 
 ## 安装
 
-添加插件市场并安装：
+### 方式一：pip（推荐）
+
+```bash
+pip install git+https://github.com/Vincent-Leon/cc-obsidian-sync.git
+cc-sync install
+```
+
+安装 `cc-sync` 命令行工具并注册 Claude Code 的 Stop hook。安装后重启 Claude Code 生效。
+
+### 方式二：Claude Code 插件
 
 ```
 /plugin marketplace add https://github.com/Vincent-Leon/cc-obsidian-sync.git
@@ -17,7 +26,18 @@
 
 ## 更新与卸载
 
-通过市场安装的插件，更新和卸载都通过插件系统管理：
+### pip 安装方式
+
+```bash
+# 更新
+pip install --upgrade git+https://github.com/Vincent-Leon/cc-obsidian-sync.git
+
+# 卸载
+cc-sync uninstall   # 从 Claude Code 设置中移除 hook
+pip uninstall cc-obsidian-sync
+```
+
+### 插件安装方式
 
 ```bash
 # 更新市场目录（拉取最新版本信息）
@@ -34,6 +54,15 @@
 ```
 
 > **注意：** 更新后需要重启 Claude Code 才能加载新版插件代码。
+>
+> **已知问题：** `plugin update` 可能只执行了 fetch 而没有 merge。如果更新后仍是旧版本，请手动执行：
+>
+> ```bash
+> cd ~/.claude/plugins/marketplaces/cc-obsidian-sync/
+> git pull
+> ```
+>
+> 然后重新运行 `/plugin update cc-obsidian-sync@cc-obsidian-sync`。
 
 也可以通过 `/plugin` → **Installed** / **Marketplaces** 标签页进行交互式管理。
 
