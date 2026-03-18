@@ -172,11 +172,36 @@ def log(msg, echo=False):
 
 # ── Config ───────────────────────────────────────────────────
 def cfg_load():
-    return json.loads(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else None
+    if not CONFIG_FILE.exists():
+        return None
+    cfg = json.loads(CONFIG_FILE.read_text())
+    # Migration: v0.4 config (fns_api at root) → v0.5 config (output.adapter)
+    if "fns_api" in cfg and "output" not in cfg:
+        cfg["output"] = {"adapter": "fns", "fns": cfg["fns_api"]}
+        cfg_save(cfg)
+    return cfg
 
 def cfg_save(c):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(c, indent=2, ensure_ascii=False))
+
+def cfg_is_configured(cfg):
+    """Check if an output adapter is properly configured."""
+    if not cfg:
+        return False
+    output = cfg.get("output", {})
+    adapter_name = output.get("adapter", "fns")
+    adapter_cfg = output.get(adapter_name, {})
+    if adapter_name == "fns":
+        return bool(adapter_cfg.get("token"))
+    elif adapter_name == "local":
+        return bool(adapter_cfg.get("path"))
+    elif adapter_name == "git":
+        return bool(adapter_cfg.get("repo_path"))
+    elif adapter_name == "server":
+        return bool(adapter_cfg.get("url"))
+    # Legacy check
+    return bool(cfg.get("fns_api", {}).get("token"))
 
 # ── Database ─────────────────────────────────────────────────
 def db_connect():
@@ -287,39 +312,178 @@ def san(name):
     s = s.strip('-. ')
     return s[:50] or "untitled"
 
-# ── FNS API ──────────────────────────────────────────────────
-def fns_call(cfg, endpoint, data, method="POST"):
-    """Call FNS REST API. Returns (ok, response_or_error)."""
-    api = cfg["fns_api"]
-    url = api["url"].rstrip("/") + endpoint
-    body = json.dumps(data).encode("utf-8")
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f'Bearer {api["token"]}',
-        "token": api["token"],
-    }
-    req = urllib.request.Request(url, data=body, method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            resp = json.loads(r.read().decode())
-            if isinstance(resp, dict) and resp.get("status") is False:
-                return False, f"FNS error {resp.get('code')}: {resp.get('message', '')}"
-            return True, resp
-    except urllib.error.HTTPError as e:
-        return False, f"HTTP {e.code}: {e.read().decode()[:300]}"
-    except Exception as e:
-        return False, str(e)
+# ── Output Adapter Interface ──────────────────────────────────
+class OutputAdapter:
+    """Base class for all output adapters."""
+    name = "base"
 
+    def write_note(self, path, content):
+        """Write a note. path is relative (e.g. 'cc-sync/My Note.md').
+        Returns (ok: bool, message: str)."""
+        raise NotImplementedError
+
+    def test_connection(self):
+        """Verify adapter is configured and reachable.
+        Returns (ok: bool, message: str)."""
+        raise NotImplementedError
+
+
+class FNSAdapter(OutputAdapter):
+    """Output adapter for Fast Note Sync REST API."""
+    name = "fns"
+
+    def __init__(self, adapter_cfg):
+        self.url = adapter_cfg.get("url", "").rstrip("/")
+        self.token = adapter_cfg.get("token", "")
+        self.vault = adapter_cfg.get("vault", "")
+
+    def _call(self, endpoint, data):
+        url = self.url + endpoint
+        body = json.dumps(data).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.token}",
+            "token": self.token,
+        }
+        req = urllib.request.Request(url, data=body, method="POST", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                resp = json.loads(r.read().decode())
+                if isinstance(resp, dict) and resp.get("status") is False:
+                    return False, f"FNS error {resp.get('code')}: {resp.get('message', '')}"
+                return True, resp
+        except urllib.error.HTTPError as e:
+            return False, f"HTTP {e.code}: {e.read().decode()[:300]}"
+        except Exception as e:
+            return False, str(e)
+
+    def write_note(self, path, content):
+        return self._call("/api/note", {"vault": self.vault, "path": path, "content": content})
+
+    def test_connection(self):
+        test = f"CC-Sync connectivity test.\nDate: {datetime.now().isoformat()}\nSafe to delete.\n"
+        return self._call("/api/note", {"vault": self.vault, "path": ".cc-sync-test.md", "content": test})
+
+
+class LocalAdapter(OutputAdapter):
+    """Output adapter that writes .md files to a local directory."""
+    name = "local"
+
+    def __init__(self, adapter_cfg):
+        self.base_path = Path(adapter_cfg.get("path", "")).expanduser()
+
+    def write_note(self, path, content):
+        target = self.base_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return True, str(target)
+
+    def test_connection(self):
+        if not self.base_path.exists():
+            return False, f"Directory does not exist: {self.base_path}"
+        test_file = self.base_path / ".cc-sync-test"
+        try:
+            test_file.write_text("test")
+            test_file.unlink()
+            return True, f"Writable: {self.base_path}"
+        except OSError as e:
+            return False, str(e)
+
+
+class GitAdapter(OutputAdapter):
+    """Output adapter that writes .md files and commits to a git repo."""
+    name = "git"
+
+    def __init__(self, adapter_cfg):
+        import subprocess as _sp
+        self._sp = _sp
+        self.repo_path = Path(adapter_cfg.get("repo_path", "")).expanduser()
+        self.auto_commit = adapter_cfg.get("auto_commit", True)
+        self.auto_push = adapter_cfg.get("auto_push", False)
+
+    def write_note(self, path, content):
+        target = self.repo_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        if self.auto_commit:
+            self._sp.run(["git", "add", str(target)], cwd=str(self.repo_path), capture_output=True)
+            self._sp.run(["git", "commit", "-m", f"cc-sync: {Path(path).stem}"],
+                         cwd=str(self.repo_path), capture_output=True)
+        if self.auto_push:
+            self._sp.run(["git", "push"], cwd=str(self.repo_path), capture_output=True)
+        return True, str(target)
+
+    def test_connection(self):
+        try:
+            r = self._sp.run(["git", "status", "--porcelain"],
+                             cwd=str(self.repo_path), capture_output=True, text=True)
+            if r.returncode == 0:
+                return True, f"Git repo OK: {self.repo_path}"
+            return False, f"Not a git repo: {self.repo_path}"
+        except FileNotFoundError:
+            return False, "git not found in PATH"
+
+
+class ServerAdapter(OutputAdapter):
+    """Output adapter that POSTs ConversationObject to cc-sync-server."""
+    name = "server"
+
+    def __init__(self, adapter_cfg):
+        self.url = adapter_cfg.get("url", "").rstrip("/")
+        self.token = adapter_cfg.get("token", "")
+
+    def write_note(self, path, content):
+        # Server mode bypasses write_note; uses send_conversation() instead
+        return False, "Use send_conversation() for server adapter"
+
+    def send_conversation(self, conversation_object):
+        """POST ConversationObject to cc-sync-server."""
+        url = f"{self.url}/api/conversations"
+        body = json.dumps(conversation_object, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.token}",
+        }
+        req = urllib.request.Request(url, data=body, method="POST", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                resp = json.loads(r.read().decode())
+                return True, resp
+        except urllib.error.HTTPError as e:
+            return False, f"HTTP {e.code}: {e.read().decode()[:300]}"
+        except Exception as e:
+            return False, str(e)
+
+    def test_connection(self):
+        url = f"{self.url}/api/health"
+        req = urllib.request.Request(url, method="GET")
+        if self.token:
+            req.add_header("Authorization", f"Bearer {self.token}")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return True, "Server reachable"
+        except Exception as e:
+            return False, str(e)
+
+
+ADAPTERS = {"fns": FNSAdapter, "local": LocalAdapter, "git": GitAdapter, "server": ServerAdapter}
+
+def get_adapter(cfg):
+    """Instantiate the configured output adapter."""
+    output = cfg.get("output", {})
+    adapter_name = output.get("adapter", "fns")
+    adapter_cls = ADAPTERS.get(adapter_name)
+    if not adapter_cls:
+        raise ValueError(f"Unknown adapter: {adapter_name}")
+    adapter_cfg = output.get(adapter_name, {})
+    return adapter_cls(adapter_cfg)
+
+
+# ── Legacy FNS helpers (kept for backward compat) ────────────
 def fns_upload(cfg, path, content):
-    """Create or update a note via FNS REST API (POST /api/note)."""
-    api = cfg["fns_api"]
-    vault = api.get("vault", "")
-    payload = {
-        "vault": vault,
-        "path": path,
-        "content": content,
-    }
-    return fns_call(cfg, "/api/note", payload)
+    """Create or update a note via FNS REST API (POST /api/note). Legacy wrapper."""
+    adapter = get_adapter(cfg)
+    return adapter.write_note(path, content)
 
 # ── JSONL Parsing ───────────────────────────────────────────
 def parse_jsonl(jsonl_path):
@@ -438,6 +602,26 @@ def format_conversation(parsed):
         lines.append("")
 
     return "\n".join(lines)
+
+
+def to_conversation_object(parsed, cfg):
+    """Convert parsed JSONL dict to ConversationObject for protocol transport."""
+    msgs = parsed["messages"]
+    project_path = parsed.get("project", "")
+    return {
+        "version": 1,
+        "source": "claude-code",
+        "device": cfg.get("device_name", "unknown"),
+        "session_id": parsed["session_id"],
+        "title": parsed["title"],
+        "date": parsed["date"],
+        "project": project_path.split("/")[-1] if project_path else "",
+        "project_path": project_path,
+        "message_count": len(msgs),
+        "word_count": sum(len(m["content"].split()) for m in msgs),
+        "content_hash": md5_str(json.dumps(msgs, ensure_ascii=False)),
+        "messages": [{**m, "seq": i} for i, m in enumerate(msgs)],
+    }
 
 
 def make_title_from_md(md_path):
@@ -581,7 +765,7 @@ def resolve_path_db(db, sync_dir, title, session_id):
 
 
 def sync_session(cfg, db, session_id, echo=False):
-    """Sync a single session from DB to FNS. Returns True/None/False."""
+    """Sync a single session via the configured output adapter. Returns True/None/False."""
     row = db.execute(
         "SELECT * FROM conversations WHERE session_id = ? AND status = 'unsynced'",
         (session_id,)
@@ -589,7 +773,7 @@ def sync_session(cfg, db, session_id, echo=False):
     if not row:
         return None  # already synced or ignored
 
-    # Reconstruct parsed dict from DB for format_conversation()
+    # Reconstruct parsed dict from DB
     msgs = db.execute(
         "SELECT role, content, time_str, is_context FROM messages WHERE session_id = ? ORDER BY seq",
         (session_id,)
@@ -603,11 +787,20 @@ def sync_session(cfg, db, session_id, echo=False):
                       "time_str": m["time_str"], "is_context": bool(m["is_context"])} for m in msgs],
     }
 
-    content = format_conversation(parsed)
-    sync_dir = cfg.get("sync_dir", "cc-sync")
-    rel_path = resolve_path_db(db, sync_dir, row["title"], session_id)
+    adapter = get_adapter(cfg)
 
-    ok, msg = fns_upload(cfg, rel_path, content)
+    if isinstance(adapter, ServerAdapter):
+        # Server mode: POST ConversationObject, no local formatting
+        conv_obj = to_conversation_object(parsed, cfg)
+        ok, msg = adapter.send_conversation(conv_obj)
+        rel_path = f"server:{parsed['title']}"
+    else:
+        # Lite mode: format markdown and write via adapter
+        content = format_conversation(parsed)
+        sync_dir = cfg.get("sync_dir", "cc-sync")
+        rel_path = resolve_path_db(db, sync_dir, row["title"], session_id)
+        ok, msg = adapter.write_note(rel_path, content)
+
     icon = "\u2705" if ok else "\u274c"
     log(f"{icon} {rel_path}", echo=echo)
 
@@ -651,29 +844,50 @@ def prompt_lang(cfg):
 
 
 def cmd_setup():
-    """Non-interactive setup. Accepts FNS JSON or individual --key=value args."""
+    """Non-interactive setup. Accepts FNS JSON, --adapter=, or individual --key=value args."""
     cfg = cfg_load() or {
         "lang": "en",
         "device_name": os.uname().nodename.split(".")[0],
         "sync_dir": "cc-sync",
-        "fns_api": {"url": "", "token": "", "vault": ""},
+        "output": {"adapter": "fns", "fns": {"url": "", "token": "", "vault": ""}},
     }
+    # Ensure output section exists (for migrated configs)
+    cfg.setdefault("output", {"adapter": "fns"})
 
     args = sys.argv[2:]
     args_text = " ".join(args).strip()
 
+    # Auto-detect FNS JSON paste (backward compatible)
     fns_json = parse_fns_json(args_text) if args_text else None
     if fns_json:
-        cfg["fns_api"]["url"] = fns_json["api"].rstrip("/")
-        cfg["fns_api"]["token"] = fns_json["apiToken"]
-        cfg["fns_api"]["vault"] = fns_json.get("vault", "")
+        cfg["output"]["adapter"] = "fns"
+        cfg["output"]["fns"] = {
+            "url": fns_json["api"].rstrip("/"),
+            "token": fns_json["apiToken"],
+            "vault": fns_json.get("vault", ""),
+        }
+        # Keep legacy key for backward compat
+        cfg["fns_api"] = cfg["output"]["fns"]
 
     for arg in args:
         if arg.startswith("--"):
             k, _, v = arg[2:].partition("=")
-            if k == "url":       cfg["fns_api"]["url"] = v
-            elif k == "token":   cfg["fns_api"]["token"] = v
-            elif k == "vault":   cfg["fns_api"]["vault"] = v
+            if k == "adapter":
+                cfg["output"]["adapter"] = v
+            elif k == "path":
+                cfg["output"].setdefault("local", {})["path"] = v
+            elif k == "repo-path":
+                cfg["output"].setdefault("git", {})["repo_path"] = v
+            elif k == "auto-push":
+                cfg["output"].setdefault("git", {})["auto_push"] = v.lower() in ("true", "1", "yes")
+            elif k == "url":
+                adapter = cfg["output"].get("adapter", "fns")
+                cfg["output"].setdefault(adapter, {})["url"] = v
+            elif k == "token":
+                adapter = cfg["output"].get("adapter", "fns")
+                cfg["output"].setdefault(adapter, {})["token"] = v
+            elif k == "vault":
+                cfg["output"].setdefault("fns", {})["vault"] = v
             elif k == "lang":    cfg["lang"] = v
             elif k == "device":  cfg["device_name"] = v
             elif k == "sync-dir": cfg["sync_dir"] = v
@@ -681,13 +895,27 @@ def cmd_setup():
     CC_LOGS.mkdir(parents=True, exist_ok=True)
     cfg_save(cfg)
 
-    api = cfg["fns_api"]
-    print(f"\n  CC Obsidian Sync — Config\n")
+    adapter_name = cfg["output"].get("adapter", "fns")
+    adapter_cfg = cfg["output"].get(adapter_name, {})
+    print(f"\n  CC-Sync — Config\n")
     print(f"  Language:  {LANG_NAMES.get(cfg.get('lang', 'en'), 'English')}")
     print(f"  Device:    {cfg['device_name']}")
-    print(f"  API:       {api.get('url')}")
-    print(f"  Vault:     {api.get('vault')}")
-    print(f"  Token:     {api['token'][:12]}..." if api.get('token') else "  Token:     (not set)")
+    print(f"  Adapter:   {adapter_name}")
+    if adapter_name == "fns":
+        print(f"  API:       {adapter_cfg.get('url')}")
+        print(f"  Vault:     {adapter_cfg.get('vault')}")
+        token = adapter_cfg.get("token", "")
+        print(f"  Token:     {token[:12]}..." if token else "  Token:     (not set)")
+    elif adapter_name == "local":
+        print(f"  Path:      {adapter_cfg.get('path')}")
+    elif adapter_name == "git":
+        print(f"  Repo:      {adapter_cfg.get('repo_path')}")
+        print(f"  Commit:    {adapter_cfg.get('auto_commit', True)}")
+        print(f"  Push:      {adapter_cfg.get('auto_push', False)}")
+    elif adapter_name == "server":
+        print(f"  Server:    {adapter_cfg.get('url')}")
+        token = adapter_cfg.get("token", "")
+        print(f"  Token:     {token[:12]}..." if token else "  Token:     (not set)")
     print(f"  Sync dir:  {cfg.get('sync_dir', 'cc-sync')}")
     print(f"  Config:    {CONFIG_FILE}")
     print(f"\n  \u2705 {t('config_saved')} {CONFIG_FILE}")
@@ -695,9 +923,9 @@ def cmd_setup():
 
 
 def cmd_hook():
-    """Stop hook entry point. Pushes latest conversation to FNS."""
+    """Stop hook entry point. Syncs latest conversation via configured adapter."""
     cfg = cfg_load()
-    if not cfg or not cfg.get("fns_api", {}).get("token"):
+    if not cfg_is_configured(cfg):
         log("Not configured — run /cc-sync:setup"); return 0
     db = db_connect()
     sid = ingest_latest(db)
@@ -731,14 +959,28 @@ def cmd_test():
     cfg = cfg_load()
     if not cfg: print(f"  {t('not_configured')}"); return 1
 
-    api = cfg.get("fns_api", {})
-    print(f"  URL:   {api.get('url')}")
-    print(f"  Vault: {api.get('vault')}")
-    print(f"  Token: {api.get('token', '')[:12]}...\n")
+    adapter_name = cfg.get("output", {}).get("adapter", "fns")
+    print(f"  Adapter: {adapter_name}")
+    adapter_cfg = cfg.get("output", {}).get(adapter_name, {})
+    if adapter_name == "fns":
+        print(f"  URL:     {adapter_cfg.get('url')}")
+        print(f"  Vault:   {adapter_cfg.get('vault')}")
+        token = adapter_cfg.get("token", "")
+        print(f"  Token:   {token[:12]}..." if token else "  Token:   (not set)")
+    elif adapter_name == "local":
+        print(f"  Path:    {adapter_cfg.get('path')}")
+    elif adapter_name == "git":
+        print(f"  Repo:    {adapter_cfg.get('repo_path')}")
+    elif adapter_name == "server":
+        print(f"  Server:  {adapter_cfg.get('url')}")
+    print()
 
-    sync_dir = cfg.get("sync_dir", "cc-sync")
-    test = f"CC-Sync connectivity test.\nDate: {datetime.now().isoformat()}\nSafe to delete.\n"
-    ok, msg = fns_upload(cfg, f"{sync_dir}/.cc-sync-test.md", test)
+    try:
+        adapter = get_adapter(cfg)
+        ok, msg = adapter.test_connection()
+    except ValueError as e:
+        ok, msg = False, str(e)
+
     if ok:
         print(f"  \u2705 {t('upload_ok')}")
     else:
@@ -761,11 +1003,20 @@ def cmd_status():
     db.close()
 
     lang_name = LANG_NAMES.get(cfg.get("lang", "en"), "English")
+    adapter_name = cfg.get("output", {}).get("adapter", "fns")
     print(f"  Language:  {lang_name}")
     print(f"  Device:    {cfg.get('device_name')}")
-    api = cfg.get("fns_api", {})
-    print(f"  FNS URL:   {api.get('url')}")
-    print(f"  Vault:     {api.get('vault')}")
+    print(f"  Adapter:   {adapter_name}")
+    adapter_cfg = cfg.get("output", {}).get(adapter_name, {})
+    if adapter_name == "fns":
+        print(f"  FNS URL:   {adapter_cfg.get('url')}")
+        print(f"  Vault:     {adapter_cfg.get('vault')}")
+    elif adapter_name == "local":
+        print(f"  Path:      {adapter_cfg.get('path')}")
+    elif adapter_name == "git":
+        print(f"  Repo:      {adapter_cfg.get('repo_path')}")
+    elif adapter_name == "server":
+        print(f"  Server:    {adapter_cfg.get('url')}")
     print(f"  Sync dir:  {cfg.get('sync_dir', 'cc-sync')}")
     print(f"  {t('processed')}  {total} {t('conversations')}")
     if stats:
@@ -944,16 +1195,41 @@ def cmd_web():
 
             elif self.path == "/api/config":
                 c = cfg_load() or {}
-                api = c.get("fns_api", {})
-                token = api.get("token", "")
+                output = c.get("output", {})
+                adapter_name = output.get("adapter", "fns")
+                adapter_cfg = output.get(adapter_name, {})
+                # Build adapter-specific info for dashboard
+                adapter_info = {"adapter": adapter_name}
+                if adapter_name == "fns":
+                    token = adapter_cfg.get("token", "")
+                    adapter_info.update({
+                        "url": adapter_cfg.get("url", ""),
+                        "token_preview": (token[:12] + "...") if len(token) > 12 else token,
+                        "token_set": bool(token),
+                        "vault": adapter_cfg.get("vault", ""),
+                    })
+                elif adapter_name == "local":
+                    adapter_info["path"] = adapter_cfg.get("path", "")
+                elif adapter_name == "git":
+                    adapter_info["repo_path"] = adapter_cfg.get("repo_path", "")
+                    adapter_info["auto_commit"] = adapter_cfg.get("auto_commit", True)
+                    adapter_info["auto_push"] = adapter_cfg.get("auto_push", False)
+                elif adapter_name == "server":
+                    token = adapter_cfg.get("token", "")
+                    adapter_info["url"] = adapter_cfg.get("url", "")
+                    adapter_info["token_set"] = bool(token)
+                # Backward compat: also include fns_api for old dashboard versions
+                api = c.get("fns_api", output.get("fns", {}))
+                fns_token = api.get("token", "")
                 json_response(self, {
                     "lang": c.get("lang", "en"),
                     "device_name": c.get("device_name", ""),
                     "sync_dir": c.get("sync_dir", "cc-sync"),
+                    "output": adapter_info,
                     "fns_api": {
                         "url": api.get("url", ""),
-                        "token_preview": (token[:12] + "...") if len(token) > 12 else token,
-                        "token_set": bool(token),
+                        "token_preview": (fns_token[:12] + "...") if len(fns_token) > 12 else fns_token,
+                        "token_set": bool(fns_token),
                         "vault": api.get("vault", ""),
                     }
                 })
@@ -971,7 +1247,7 @@ def cmd_web():
 
             elif self.path == "/api/info":
                 json_response(self, {
-                    "version": "0.3.0",
+                    "version": "0.5.0",
                     "db_path": str(DB_FILE),
                     "config_path": str(CONFIG_FILE),
                     "log_path": str(LOG_FILE),
@@ -993,7 +1269,7 @@ def cmd_web():
 
             if self.path == "/api/sync":
                 cfg = cfg_load()
-                if not cfg or not cfg.get("fns_api", {}).get("token"):
+                if not cfg_is_configured(cfg):
                     json_response(self, {"ok": False, "message": "Not configured"}, 400); return
                 result = sync_session(cfg, db, sid)
                 if result is True:
@@ -1005,7 +1281,7 @@ def cmd_web():
 
             elif self.path == "/api/resync":
                 cfg = cfg_load()
-                if not cfg or not cfg.get("fns_api", {}).get("token"):
+                if not cfg_is_configured(cfg):
                     json_response(self, {"ok": False, "message": "Not configured"}, 400); return
                 db.execute(
                     "UPDATE conversations SET status='unsynced', updated_at=? WHERE session_id=?",
@@ -1035,38 +1311,44 @@ def cmd_web():
                 json_response(self, {"ok": True, "total": total})
 
             elif self.path == "/api/config":
+                old = cfg_load() or {}
                 new_cfg = {
-                    "lang": body.get("lang", "en"),
-                    "device_name": body.get("device_name", ""),
-                    "sync_dir": body.get("sync_dir", "cc-sync"),
-                    "fns_api": {
-                        "url": body.get("fns_api", {}).get("url", ""),
-                        "token": body.get("fns_api", {}).get("token", ""),
-                        "vault": body.get("fns_api", {}).get("vault", ""),
-                    }
+                    "lang": body.get("lang", old.get("lang", "en")),
+                    "device_name": body.get("device_name", old.get("device_name", "")),
+                    "sync_dir": body.get("sync_dir", old.get("sync_dir", "cc-sync")),
+                    "output": body.get("output", old.get("output", {"adapter": "fns"})),
                 }
-                # If token is empty string, keep the old one
-                if not new_cfg["fns_api"]["token"]:
-                    old = cfg_load() or {}
-                    new_cfg["fns_api"]["token"] = old.get("fns_api", {}).get("token", "")
+                # Backward compat: accept fns_api from old dashboard
+                if "fns_api" in body and "output" not in body:
+                    fns_cfg = {
+                        "url": body["fns_api"].get("url", ""),
+                        "token": body["fns_api"].get("token", ""),
+                        "vault": body["fns_api"].get("vault", ""),
+                    }
+                    if not fns_cfg["token"]:
+                        fns_cfg["token"] = old.get("output", {}).get("fns", old.get("fns_api", {})).get("token", "")
+                    new_cfg["output"] = {"adapter": "fns", "fns": fns_cfg}
+                    new_cfg["fns_api"] = fns_cfg
                 cfg_save(new_cfg)
                 json_response(self, {"ok": True, "message": "Config saved"})
 
             elif self.path == "/api/test":
                 import time
                 cfg = cfg_load()
-                if not cfg or not cfg.get("fns_api", {}).get("token"):
+                if not cfg_is_configured(cfg):
                     json_response(self, {"ok": False, "message": "Not configured", "latency_ms": 0}, 400); return
-                sync_dir = cfg.get("sync_dir", "cc-sync")
-                test_content = f"CC-Sync connectivity test.\nDate: {datetime.now().isoformat()}\nSafe to delete.\n"
                 t0 = time.time()
-                ok, msg = fns_upload(cfg, f"{sync_dir}/.cc-sync-test.md", test_content)
+                try:
+                    adapter = get_adapter(cfg)
+                    ok, msg = adapter.test_connection()
+                except ValueError as e:
+                    ok, msg = False, str(e)
                 latency = int((time.time() - t0) * 1000)
                 json_response(self, {"ok": ok, "message": "OK" if ok else str(msg), "latency_ms": latency})
 
             elif self.path == "/api/sync-all":
                 cfg = cfg_load()
-                if not cfg or not cfg.get("fns_api", {}).get("token"):
+                if not cfg_is_configured(cfg):
                     json_response(self, {"ok": False, "message": "Not configured"}, 400); return
                 rows = db.execute("SELECT session_id FROM conversations WHERE status='unsynced'").fetchall()
                 synced, failed = 0, 0
@@ -1118,14 +1400,6 @@ def _get_settings_path():
     """Get Claude Code user settings path."""
     return HOME / ".claude" / "settings.json"
 
-def _hook_entry():
-    """Return the hook configuration for Claude Code settings."""
-    return {
-        "type": "command",
-        "command": "cc-sync hook",
-        "timeout": 30
-    }
-
 def cmd_install():
     """Install cc-sync as a Claude Code Stop hook."""
     settings_path = _get_settings_path()
@@ -1136,17 +1410,16 @@ def cmd_install():
     hooks = settings.setdefault("hooks", {})
     stop_hooks = hooks.setdefault("Stop", [])
 
-    entry = _hook_entry()
-    # Check if already installed
+    entry = {"type": "command", "command": "cc-sync hook", "timeout": 30}
     for hook in stop_hooks:
         if hook.get("command", "").startswith("cc-sync "):
-            print("  ✅ cc-sync hook is already installed.")
+            print("  \u2705 cc-sync hook is already installed.")
             return
 
     stop_hooks.append(entry)
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
-    print("  ✅ Installed cc-sync Stop hook in Claude Code settings.")
+    print("  \u2705 Installed cc-sync Stop hook in Claude Code settings.")
     print(f"  Settings: {settings_path}")
     print("  Restart Claude Code to activate.")
 
@@ -1166,14 +1439,13 @@ def cmd_uninstall():
         print("  cc-sync hook not found in settings.")
         return
 
-    # Clean up empty structures
     if not stop_hooks:
         settings.get("hooks", {}).pop("Stop", None)
     if not settings.get("hooks"):
         settings.pop("hooks", None)
 
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
-    print("  ✅ Removed cc-sync hook from Claude Code settings.")
+    print("  \u2705 Removed cc-sync hook from Claude Code settings.")
     print("  Restart Claude Code to apply.")
 
 
@@ -1192,7 +1464,7 @@ def main():
     elif cmd == "install":   cmd_install()
     elif cmd == "uninstall": cmd_uninstall()
     else:
-        print("  cc-sync — CC → Obsidian via FNS")
+        print("  cc-sync — CC conversation sync")
         print("  Commands: setup, hook, run, export, test, status, log, ingest, web")
         print("           install, uninstall")
 

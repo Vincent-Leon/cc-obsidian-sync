@@ -1,14 +1,14 @@
 {
-  "name": "cc-obsidian-sync",
+  "name": "cc-sync",
   "owner": {
     "name": "Vincent Leon"
   },
   "metadata": {
-    "description": "Auto-sync Claude Code conversations to Obsidian via Fast Note Sync."
+    "description": "Auto-sync Claude Code conversations to your knowledge base."
   },
   "plugins": [
     {
-      "name": "cc-obsidian-sync",
+      "name": "cc-sync",
       "source": "./.claude-plugin"
     }
   ]

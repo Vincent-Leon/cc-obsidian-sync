@@ -3,14 +3,15 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cc-obsidian-sync"
-version = "0.4.0"
-description = "Auto-sync Claude Code conversations to Obsidian via Fast Note Sync"
+name = "cc-sync-plugin"
+version = "0.5.0"
+description = "Auto-sync Claude Code conversations to your knowledge base"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.8"
 authors = [{name = "Vincent Leon"}]
-keywords = ["obsidian", "claude-code", "sync", "fast-note-sync"]
+keywords = ["claude-code", "sync", "obsidian", "knowledge-base", "conversation"]
+dependencies = ["jinja2"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -20,14 +21,14 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Vincent-Leon/cc-obsidian-sync"
-Repository = "https://github.com/Vincent-Leon/cc-obsidian-sync"
+Homepage = "https://github.com/Vincent-Leon/cc-sync-plugin"
+Repository = "https://github.com/Vincent-Leon/cc-sync-plugin"
 
 [project.scripts]
-cc-sync = "cc_obsidian_sync.core:main"
+cc-sync = "cc_sync.core:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-cc_obsidian_sync = ["dashboard.html"]
+cc_sync = ["dashboard.html"]

@@ -1,11 +1,11 @@
 {
-  "name": "cc-obsidian-sync",
-  "version": "0.4.0",
-  "description": "Auto-sync Claude Code conversations to Obsidian via Fast Note Sync.",
+  "name": "cc-sync",
+  "version": "0.5.0",
+  "description": "Auto-sync Claude Code conversations to your knowledge base.",
   "author": {
     "name": "Vincent Leon"
   },
-  "repository": "https://github.com/Vincent-Leon/cc-obsidian-sync",
+  "repository": "https://github.com/Vincent-Leon/cc-sync-plugin",
   "license": "MIT",
-  "keywords": ["obsidian", "sync", "conversation", "knowledge-base", "fast-note-sync"]
+  "keywords": ["sync", "conversation", "knowledge-base", "obsidian", "claude-code"]
 }

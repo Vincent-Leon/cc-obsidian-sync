@@ -1,17 +1,17 @@
 [简体中文](README.zh-CN.md) / [繁體中文](README.zh-TW.md) / [English](README.md)
 
-# cc-obsidian-sync
+# cc-sync
 
-Auto-sync Claude Code conversations to Obsidian via [Fast Note Sync](https://github.com/haierkeys/fast-note-sync-service).
+Auto-sync Claude Code conversations to your knowledge base.
 
-Conversations are parsed from JSONL, deduplicated by session, and pushed to your Obsidian vault with per-message timestamps. No extra processing, no opinionated folder structure. Just sync.
+Conversations are parsed from JSONL, deduplicated by session, and pushed to your note system with per-message timestamps. Supports multiple output adapters: local files, FNS, Git, or a self-hosted server.
 
 ## Install
 
 ### Option A: pip (recommended)
 
 ```bash
-pip install git+https://github.com/Vincent-Leon/cc-obsidian-sync.git
+pip install git+https://github.com/Vincent-Leon/cc-sync-plugin.git
 cc-sync install
 ```
 
@@ -20,8 +20,8 @@ This installs the `cc-sync` CLI and registers the Stop hook in Claude Code setti
 ### Option B: Claude Code Plugin
 
 ```
-/plugin marketplace add https://github.com/Vincent-Leon/cc-obsidian-sync.git
-/plugin install cc-obsidian-sync@cc-obsidian-sync
+/plugin marketplace add https://github.com/Vincent-Leon/cc-sync-plugin.git
+/plugin install cc-sync@cc-sync
 ```
 
 ## Update & Uninstall
@@ -30,27 +30,23 @@ This installs the `cc-sync` CLI and registers the Stop hook in Claude Code setti
 
 ```bash
 # Update
-pip install --upgrade git+https://github.com/Vincent-Leon/cc-obsidian-sync.git
+pip install --upgrade git+https://github.com/Vincent-Leon/cc-sync-plugin.git
 
 # Uninstall
 cc-sync uninstall   # remove hook from Claude Code settings
-pip uninstall cc-obsidian-sync
+pip uninstall cc-sync-plugin
 ```
 
 ### If installed via plugin
 
 ```bash
-# Update the marketplace catalog (fetches latest versions)
-/plugin marketplace update cc-obsidian-sync
-
-# Update the installed plugin to latest version
-/plugin update cc-obsidian-sync@cc-obsidian-sync
+# Update
+/plugin marketplace update cc-sync
+/plugin update cc-sync@cc-sync
 
 # Uninstall
-/plugin uninstall cc-obsidian-sync@cc-obsidian-sync
-
-# Remove marketplace entirely (also uninstalls its plugins)
-/plugin marketplace remove cc-obsidian-sync
+/plugin uninstall cc-sync@cc-sync
+/plugin marketplace remove cc-sync
 ```
 
 > **Note:** After updating, restart Claude Code to load the new plugin code.
@@ -58,33 +54,49 @@ pip uninstall cc-obsidian-sync
 > **Known issue:** `plugin update` may only fetch without merging. If you're stuck on an old version, run:
 >
 > ```bash
-> cd ~/.claude/plugins/marketplaces/cc-obsidian-sync/
+> cd ~/.claude/plugins/marketplaces/cc-sync/
 > git pull
 > ```
 >
-> Then run `/plugin update cc-obsidian-sync@cc-obsidian-sync` again.
-
-You can also manage plugins interactively via `/plugin` → **Installed** / **Marketplaces** tabs.
+> Then run `/plugin update cc-sync@cc-sync` again.
 
 ## Setup
 
-After installing, run:
+Choose an output adapter during setup:
 
-```
-/cc-sync:setup {"api": "https://your-fns-server.com", "apiToken": "your-token", "vault": "Documents"}
-```
+```bash
+# Local files (write directly to Obsidian vault)
+cc-sync setup --adapter=local --path=~/Documents/Obsidian/MyVault
 
-The JSON can be copied from the FNS management panel (repository page).
+# FNS (Fast Note Sync server)
+cc-sync setup '{"api": "https://your-fns-server.com", "apiToken": "your-token", "vault": "Documents"}'
+
+# Git (auto-commit to a git repo)
+cc-sync setup --adapter=git --repo-path=~/obsidian-vault
+
+# Server (push to cc-sync-server)
+cc-sync setup --adapter=server --url=http://localhost:8080 --token=your-token
+```
 
 Then restart Claude Code. Every conversation is now auto-synced.
+
+## Output Adapters
+
+| Adapter | Mode | Description |
+|---------|------|-------------|
+| `local` | Lite | Write .md files directly to a local directory |
+| `fns` | Lite | Push via [Fast Note Sync](https://github.com/haierkeys/fast-note-sync-service) REST API |
+| `git` | Lite | Write .md + auto git commit (optional push) |
+| `server` | Server | POST to [cc-sync-server](https://github.com/Vincent-Leon/cc-sync-server) for multi-device sync |
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `/cc-sync:setup` | Configure FNS connection |
+| `/cc-sync:setup` | Configure output adapter |
+| `/cc-sync:web` | Open web dashboard |
 | `/cc-sync:export` | Bulk export all unsynchronized conversations |
-| `/cc-sync:test` | Test API connectivity |
+| `/cc-sync:test` | Test adapter connectivity |
 | `/cc-sync:run` | Manually sync latest conversation |
 | `/cc-sync:status` | Show config and sync state |
 | `/cc-sync:log` | View recent sync activity |
@@ -92,7 +104,7 @@ Then restart Claude Code. Every conversation is now auto-synced.
 ## How it works
 
 ```
-CC Stop hook → parse JSONL → deduplicate by session → push to FNS → Obsidian syncs
+CC Stop hook → parse JSONL → deduplicate by session → output adapter → knowledge base
 ```
 
 - Conversations are parsed from `.jsonl` files (not `.md`) for structured data
@@ -102,16 +114,18 @@ CC Stop hook → parse JSONL → deduplicate by session → push to FNS → Obsi
 - Each message includes a timestamp: `### User [14:30]`
 - Content changes are tracked by hash — updates overwrite in place, no duplicates
 
-The plugin only handles sync. Organizing notes (folders, tags, daily notes, Dataview queries, etc.) is left to Obsidian.
+The plugin only handles sync. Organizing notes is left to your note app.
 
 ## Multi-device
 
-Install on every device. Each pushes to the same FNS server. All your Obsidian clients receive updates in real-time via FNS sync.
+**Lite mode:** Install on every device, each pushes to the same FNS server or git repo.
+
+**Server mode:** Install the plugin on every device, all push to one [cc-sync-server](https://github.com/Vincent-Leon/cc-sync-server) instance. The server handles dedup, storage, and downstream distribution.
 
 ## Requirements
 
 - Python 3.8+
-- A running [FNS server](https://github.com/haierkeys/fast-note-sync-service) with the Obsidian plugin configured
+- Jinja2 (`pip install jinja2`, auto-installed with pip)
 
 ## License
 
