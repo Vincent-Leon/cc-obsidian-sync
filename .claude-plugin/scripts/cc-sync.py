@@ -266,6 +266,15 @@ def db_init_schema(db):
         );
         INSERT OR IGNORE INTO schema_version (version) VALUES (1);
     """)
+    # Schema v2: add source column
+    v = db.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] or 1
+    if v < 2:
+        try:
+            db.execute("ALTER TABLE conversations ADD COLUMN source TEXT DEFAULT 'claude-code'")
+        except Exception:
+            pass  # column may already exist
+        db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (2)")
+        db.commit()
     # FTS5 for dashboard search (title + project)
     try:
         db.execute("""
@@ -604,13 +613,13 @@ def format_conversation(parsed):
     return "\n".join(lines)
 
 
-def to_conversation_object(parsed, cfg):
+def to_conversation_object(parsed, cfg, source="claude-code"):
     """Convert parsed JSONL dict to ConversationObject for protocol transport."""
     msgs = parsed["messages"]
     project_path = parsed.get("project", "")
     return {
         "version": 1,
-        "source": "claude-code",
+        "source": source,
         "device": cfg.get("device_name", "unknown"),
         "session_id": parsed["session_id"],
         "title": parsed["title"],
